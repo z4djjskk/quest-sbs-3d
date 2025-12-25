@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>2D→3D SBS 生成台</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css?v=4" />
+  </head>
+  <body>
+    <div class="bg-shapes">
+      <span></span>
+      <span></span>
+      <span></span>
+    </div>
+
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Quest Friendly • SHARP 3DGS • SBS MP4</p>
+        <h1>2D → 3D 立体视频生成台</h1>
+        <p class="subtitle">
+          高质量、舒适、稳健。先设置参数，再一键生成命令运行。
+        </p>
+      </div>
+      <div class="hero-card">
+        <div class="metric">
+          <span>舒适优先</span>
+          <strong id="comfortLabel">舒适</strong>
+        </div>
+        <div class="metric">
+          <span>最大视差</span>
+          <strong><span id="dispValue">60</span> px</strong>
+        </div>
+        <div class="metric">
+          <span>基线</span>
+          <strong><span id="baselineValue">0.064</span> m</strong>
+        </div>
+      </div>
+    </header>
+
+    <section class="preset-row">
+      <button class="preset" data-preset="comfort">舒适优先</button>
+      <button class="preset" data-preset="depth">立体感更强</button>
+      <button class="preset" data-preset="stable">保守稳定</button>
+    </section>
+
+    <main class="grid">
+      <section class="card">
+        <h2>输入与输出</h2>
+        <div class="field">
+          <label for="videoPath">输入视频</label>
+          <div class="picker-row">
+            <input type="text" id="videoPath" placeholder="选择并上传后显示路径" readonly />
+            <button type="button" class="picker-btn" id="videoPickBtn">选择并上传</button>
+          </div>
+          <input type="file" id="videoPicker" accept="video/*" hidden />
+          <p class="hint" id="videoHint">未选择文件</p>
+        </div>
+        <div class="field">
+          <label for="outPath">输出文件名</label>
+          <div class="picker-row">
+            <input type="text" id="outPath" placeholder="output_sbs.mp4" />
+            <button type="button" class="picker-btn" id="downloadBtn">下载输出</button>
+          </div>
+          <p class="hint" id="outHint">生成完成后可下载保存</p>
+        </div>
+        <label>
+          调试目录（可选）
+          <input type="text" id="debugDir" placeholder="debug_output" />
+        </label>
+        <label>
+          设备
+          <select id="device">
+            <option value="auto">auto (优先 CUDA)</option>
+            <option value="cuda">cuda</option>
+            <option value="cpu">cpu</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="card">
+        <h2>舒适与深度</h2>
+        <label>
+          基线 (m)
+          <input type="number" id="baseline" step="0.001" value="0.064" />
+        </label>
+        <label>
+          最小基线 (m)
+          <input type="number" id="baselineMin" step="0.001" value="0" />
+        </label>
+        <label>
+          最大视差 (px)
+          <input type="range" id="maxDisp" min="10" max="60" value="60" />
+          <div class="range-info"><span>10</span><span>60</span></div>
+        </label>
+        <label>
+          水平 FOV (deg)
+          <input type="number" id="fov" step="1" value="60" />
+        </label>
+      </section>
+
+      <section class="card">
+        <h2>稳健与质量</h2>
+        <label>
+          镜头切分阈值
+          <input type="number" id="cutThreshold" step="0.01" value="0.9" />
+        </label>
+        <label>
+          最短镜头长度 (s)
+          <input type="number" id="minShot" step="0.01" value="0.01" />
+        </label>
+        <label>
+          最长镜头长度 (s)
+          <input type="number" id="maxShot" step="0.01" value="0.05" />
+        </label>
+        <label>
+          PnP 最小内点
+          <input type="number" id="minInliers" step="1" value="70" />
+        </label>
+        <label>
+          PnP 最大重投影误差
+          <input type="number" id="maxReproj" step="0.1" value="2" />
+        </label>
+      </section>
+
+      <section class="card">
+        <h2>编码与渲染</h2>
+        <label>
+          ffmpeg CRF
+          <input type="number" id="crf" step="1" value="18" />
+        </label>
+        <label>
+          ffmpeg preset
+          <select id="preset">
+            <option value="slow">slow</option>
+            <option value="medium">medium</option>
+            <option value="fast">fast</option>
+          </select>
+        </label>
+        <label>
+          补洞半径
+          <input type="number" id="inpaint" step="1" value="2" />
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" id="copyAudio" checked />
+          复制原视频音频
+        </label>
+        <label>
+          音频编码
+          <select id="audioCodec">
+            <option value="copy">copy</option>
+            <option value="aac">aac</option>
+          </select>
+        </label>
+        <label>
+          调试抽帧间隔
+          <input type="number" id="debugInterval" step="1" value="30" />
+        </label>
+        <label>
+          限制帧数（可选）
+          <input type="number" id="maxFrames" step="1" placeholder="0" />
+        </label>
+      </section>
+
+      <section class="card">
+        <h2>性能 / 后端</h2>
+        <label>
+          IO 后端
+          <select id="ioBackend">
+            <option value="opencv">opencv</option>
+            <option value="ffmpeg" selected>ffmpeg</option>
+          </select>
+        </label>
+        <label>
+          解码后端
+          <select id="decode">
+            <option value="cpu">cpu</option>
+            <option value="nvdec" selected>nvdec</option>
+          </select>
+        </label>
+        <label>
+          编码器
+          <select id="encode">
+            <option value="x264">x264</option>
+            <option value="nvenc">nvenc</option>
+            <option value="hevc_nvenc" selected>hevc_nvenc (4K+)</option>
+          </select>
+        </label>
+        <label>
+          追踪后端
+          <select id="trackBackend">
+            <option value="cpu">cpu</option>
+            <option value="opencv_cuda">opencv_cuda</option>
+          </select>
+        </label>
+        <label>
+          关键帧模式
+          <select id="keyframeMode">
+            <option value="normal">normal (auto)</option>
+            <option value="freeze">freeze (first only)</option>
+            <option value="cache_only">cache_only (ply only)</option>
+            <option value="per_frame">per_frame (every frame)</option>
+          </select>
+        </label>
+        <label>
+          per_frame 批大小
+          <input type="number" id="perFrameBatch" step="1" min="1" value="1" />
+        </label>
+        <label>
+          per_frame pipeline 深度
+          <input type="number" id="perFramePipeline" step="1" min="1" value="2" />
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" id="perFrameCache" />
+          每帧缓存 PLY (per_frame 可选)
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" id="clearCacheOnExit" checked />
+          退出后清空缓存 (.cache_sharp)
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" id="amp" />
+          启用 FP16 (AMP)
+        </label>
+      </section>
+    </main>
+
+    <section class="card command-card">
+      <div class="run-header">
+        <div>
+          <h2>一键运行</h2>
+          <p class="muted">本地执行并实时显示进度与日志。</p>
+        </div>
+        <span class="status-pill" id="statusPill">空闲</span>
+      </div>
+      <div class="progress">
+        <div class="progress-bar" id="progressBar"></div>
+      </div>
+      <div class="progress-info" id="progressInfo">等待启动</div>
+      <div class="actions">
+        <button class="primary" id="runBtn">开始生成</button>
+        <button class="ghost" id="stopBtn">停止</button>
+        <button class="ghost" id="resetBtn">恢复默认</button>
+      </div>
+      <div class="log-box" id="logBox"></div>
+    </section>
+
+    <footer class="footer">
+      <span>提示：舒适优先时建议 max_disp ≤ 30，立体感增强可适度提高。</span>
+    </footer>
+
+    <script src="app.js?v=4"></script>
+  </body>
+</html>
