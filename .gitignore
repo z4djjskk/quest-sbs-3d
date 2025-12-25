@@ -18,3 +18,5 @@ web_server.log
 .venv/
 .idea/
 .vscode/
+
+.repo_git/
