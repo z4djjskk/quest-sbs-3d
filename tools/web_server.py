@@ -17,6 +17,9 @@ WEB_DIR = ROOT / "web"
 LOG_PATH = ROOT / "web_server.log"
 UPLOADS_DIR = ROOT / "uploads"
 OUTPUTS_DIR = ROOT / "outputs"
+QUEUE_MAX = 2000
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
 
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -33,7 +36,6 @@ LOGGER = logging.getLogger("web_server")
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ.setdefault("PYTHONUTF8", "1")
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
-os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "12.0")
 _CUDA_ROOT = Path(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0")
 _CUDA_BIN = _CUDA_ROOT / "bin" / "x64"
 if not _CUDA_BIN.exists():
@@ -100,7 +102,18 @@ def _parse_frame_rate(rate: str) -> float:
         return 0.0
 
 
-def _probe_total_frames(video_path: Path) -> int:
+def _count_batch_inputs(input_path: Path, mode: str | None) -> int:
+    if not input_path.is_dir():
+        return 1
+    exts = IMAGE_EXTS if mode == "image" else VIDEO_EXTS
+    return sum(
+        1
+        for path in sorted(input_path.iterdir())
+        if path.is_file() and path.suffix.lower() in exts
+    )
+
+
+def _probe_total_frames(video_path: Path, target_fps: float | None = None) -> int:
     cmd = [
         "ffprobe",
         "-v",
@@ -125,13 +138,18 @@ def _probe_total_frames(video_path: Path) -> int:
             return 0
         stream = streams[0]
         nb_frames = stream.get("nb_frames")
-        if isinstance(nb_frames, str) and nb_frames.isdigit():
-            return int(nb_frames)
         fps = _parse_frame_rate(stream.get("avg_frame_rate") or "") or _parse_frame_rate(
             stream.get("r_frame_rate") or ""
         )
         fmt = payload.get("format") or {}
         duration = float(fmt.get("duration") or 0.0)
+        if target_fps and target_fps > 0:
+            if duration > 0:
+                return int(duration * target_fps + 0.5)
+            if isinstance(nb_frames, str) and nb_frames.isdigit() and fps > 0:
+                return int(int(nb_frames) * (target_fps / fps) + 0.5)
+        if isinstance(nb_frames, str) and nb_frames.isdigit():
+            return int(nb_frames)
         if duration > 0 and fps > 0:
             return int(duration * fps + 0.5)
     except Exception:
@@ -145,7 +163,7 @@ class Runner:
         self.proc = None
         self.thread = None
         self.heartbeat_thread = None
-        self.queue = queue.Queue()
+        self.queue = queue.Queue(maxsize=QUEUE_MAX)
         self.total_frames = 0
         self.current_frame = 0
         self.running = False
@@ -154,6 +172,15 @@ class Runner:
         self.start_time = 0.0
         self.last_output_time = 0.0
         self.last_heartbeat = 0.0
+        self.activity_label = "运行中"
+        self.status = "空闲"
+        self.current_job = ""
+        self.batch_index = 0
+        self.batch_total = 0
+        self.batch_mode = False
+        self.io_backend = None
+        self.target_fps = 0.0
+        self.mode = "video"
 
     def start(self, payload: dict) -> dict:
         with self.lock:
@@ -162,24 +189,50 @@ class Runner:
 
             video = payload.get("video")
             out = payload.get("out")
+            mode = payload.get("mode", "video")
             if not video:
-                return {"ok": False, "error": "请先选择输入视频"}
+                return {"ok": False, "error": "请先选择输入路径"}
 
             video_path = Path(video)
             if not video_path.exists():
-                return {"ok": False, "error": "输入视频不存在"}
+                return {"ok": False, "error": "输入路径不存在"}
 
-            self.total_frames = self._get_total_frames(video_path, payload.get("io_backend"))
+            is_batch = bool(payload.get("batch_mode")) or video_path.is_dir()
+            if mode == "image" or is_batch:
+                self.total_frames = 0
+            else:
+                self.total_frames = self._get_total_frames(
+                    video_path,
+                    payload.get("io_backend"),
+                    float(payload.get("target_fps") or 0),
+                )
+            if is_batch:
+                self.batch_total = _count_batch_inputs(video_path, mode)
+            else:
+                self.batch_total = 0
             self.current_frame = 0
-            self.queue = queue.Queue()
+            self.queue = queue.Queue(maxsize=QUEUE_MAX)
             self.running = True
             self.stop_requested = False
             self.start_time = time.time()
             self.last_output_time = self.start_time
             self.last_heartbeat = 0.0
+            self.activity_label = "运行中"
+            self.status = "运行中"
+            self.current_job = "run"
+            self.batch_mode = is_batch
+            self.io_backend = payload.get("io_backend")
+            self.target_fps = float(payload.get("target_fps") or 0)
+            self.mode = mode
 
-            output_path = self._resolve_output(out)
-            self.last_output_path = output_path
+            self.batch_index = 0
+
+            if is_batch:
+                output_path = self._resolve_batch_output(out, video_path)
+                self.last_output_path = ""
+            else:
+                output_path = self._resolve_output(out, video_path, mode)
+                self.last_output_path = output_path
             payload["out"] = output_path
             log_path = OUTPUTS_DIR / f"run_{int(time.time())}.log"
             payload["log_path"] = str(log_path)
@@ -202,13 +255,54 @@ class Runner:
             self.thread.start()
             self.heartbeat_thread = threading.Thread(target=self._heartbeat, daemon=True)
             self.heartbeat_thread.start()
-            self._enqueue(
-                {
-                    "type": "log",
-                    "line": f"任务已启动: video={video_path} out={output_path} frames={self.total_frames}",
-                }
-            )
+            start_line = f"任务已启动: input={video_path} out={output_path}"
+            if self.total_frames:
+                start_line += f" frames={self.total_frames}"
+            self._enqueue({"type": "log", "line": start_line})
             self._enqueue({"type": "status", "state": "运行中"})
+            return {"ok": True}
+
+    def start_precompile(self, payload: dict) -> dict:
+        with self.lock:
+            if self.running:
+                return {"ok": False, "error": "任务正在运行"}
+
+            self.total_frames = 0
+            self.current_frame = 0
+            self.queue = queue.Queue(maxsize=QUEUE_MAX)
+            self.running = True
+            self.stop_requested = False
+            self.start_time = time.time()
+            self.last_output_time = self.start_time
+            self.last_heartbeat = 0.0
+            self.last_output_path = ""
+            self.activity_label = "预编译中"
+            self.status = "预编译中"
+            self.current_job = "precompile"
+            self.batch_mode = False
+            self.batch_index = 0
+            self.batch_total = 0
+
+            cmd = self._build_precompile_command(payload)
+            env = os.environ.copy()
+            env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+            self.proc = subprocess.Popen(
+                cmd,
+                cwd=str(ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                env=env,
+            )
+            self.thread = threading.Thread(target=self._reader, daemon=True)
+            self.thread.start()
+            self.heartbeat_thread = threading.Thread(target=self._heartbeat, daemon=True)
+            self.heartbeat_thread.start()
+            self._enqueue({"type": "log", "line": "预编译已启动"})
+            self._enqueue({"type": "status", "state": "预编译中"})
             return {"ok": True}
 
     def stop(self) -> dict:
@@ -217,7 +311,25 @@ class Runner:
                 return {"ok": False, "error": "没有正在运行的任务"}
             self.stop_requested = True
             self.proc.terminate()
+            self.status = "停止中"
             return {"ok": True}
+
+    def get_status(self) -> dict:
+        with self.lock:
+            running = self.running
+            status = self.status or ("运行中" if running else "空闲")
+            return {
+                "ok": True,
+                "running": running,
+                "status": status,
+                "job": self.current_job,
+                "frame": self.current_frame,
+                "total": self.total_frames,
+                "percent": self._progress_percent(),
+                "batch_index": self.batch_index,
+                "batch_total": self.batch_total,
+                "last_output": self.last_output_path,
+            }
 
     def stream(self):
         while True:
@@ -227,7 +339,8 @@ class Runner:
                 if self.running and (time.time() - self.last_heartbeat) > 5:
                     elapsed = int(time.time() - self.start_time)
                     self.last_heartbeat = time.time()
-                    yield f"data: {json.dumps({'type': 'log', 'line': f'运行中... 已用时 {elapsed}s'}, ensure_ascii=False)}\n\n"
+                    label = self.activity_label or "运行中"
+                    yield f"data: {json.dumps({'type': 'log', 'line': f'{label}... 已用时 {elapsed}s'}, ensure_ascii=False)}\n\n"
                 else:
                     yield ": ping\n\n"
                 continue
@@ -239,10 +352,39 @@ class Runner:
     def _reader(self) -> None:
         assert self.proc is not None
         frame_re = re.compile(r"frame=(\d+)")
+        batch_re = re.compile(r"\[(\d+)/(\d+)\]")
         for line in self.proc.stdout:
             line = line.rstrip()
             self._enqueue({"type": "log", "line": line})
             self.last_output_time = time.time()
+            batch_match = batch_re.search(line)
+            if batch_match:
+                self.batch_index = int(batch_match.group(1))
+                self.batch_total = int(batch_match.group(2))
+                remainder = line[batch_match.end():].strip()
+                input_path = remainder
+                if "->" in remainder:
+                    input_path = remainder.split("->", 1)[0].strip()
+                if self.mode != "image" and input_path:
+                    try:
+                        path = Path(input_path)
+                        if path.exists():
+                            self.total_frames = self._get_total_frames(path, self.io_backend, self.target_fps)
+                            self.current_frame = 0
+                            percent = self._progress_percent()
+                            self._enqueue(
+                                {
+                                    "type": "progress",
+                                    "frame": self.current_frame,
+                                    "total": self.total_frames,
+                                    "percent": percent,
+                                }
+                            )
+                    except Exception:
+                        pass
+                self._enqueue(
+                    {"type": "batch", "index": self.batch_index, "total": self.batch_total}
+                )
             match = frame_re.search(line)
             if match:
                 self.current_frame = int(match.group(1))
@@ -262,10 +404,13 @@ class Runner:
             self.proc = None
 
         if self.stop_requested:
+            self.status = "已停止"
             self._enqueue({"type": "status", "state": "已停止"})
         elif ret == 0:
+            self.status = "完成"
             self._enqueue({"type": "status", "state": "完成"})
         else:
+            self.status = "失败"
             self._enqueue({"type": "status", "state": "失败"})
 
     def _heartbeat(self) -> None:
@@ -283,7 +428,14 @@ class Runner:
         try:
             self.queue.put_nowait(msg)
         except queue.Full:
-            pass
+            try:
+                self.queue.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                self.queue.put_nowait(msg)
+            except queue.Full:
+                pass
 
     def _build_command(self, payload: dict) -> list[str]:
         cmd = [sys.executable, "-u", "tools/video_to_sbs.py"]
@@ -305,12 +457,26 @@ class Runner:
         add("--cut_threshold", payload.get("cut_threshold"))
         add("--min_shot_len", payload.get("min_shot_len"))
         add("--max_shot_len", payload.get("max_shot_len"))
+        add("--keyframe_refresh_s", payload.get("keyframe_refresh_s"))
+        add("--target_fps", payload.get("target_fps"))
         add("--min_inliers", payload.get("min_inliers"))
         add("--max_reproj", payload.get("max_reproj"))
         add("--ffmpeg_crf", payload.get("ffmpeg_crf"))
         add("--ffmpeg_preset", payload.get("ffmpeg_preset"))
         add("--inpaint_radius", payload.get("inpaint_radius"))
         add("--debug_interval", payload.get("debug_interval"))
+        add("--log_interval", payload.get("log_interval"))
+        add("--perf_interval", payload.get("perf_interval"))
+        add("--mode", payload.get("mode"))
+        add("--segment_frames", payload.get("segment_frames"))
+        add("--buffer_frames", payload.get("buffer_frames"))
+        if payload.get("two_pass"):
+            cmd.append("--two_pass")
+        gpu_assist = payload.get("gpu_assist")
+        if gpu_assist is True:
+            cmd.append("--gpu_assist")
+        elif gpu_assist is False:
+            cmd.append("--no-gpu_assist")
         if payload.get("max_frames"):
             add("--max_frames", payload.get("max_frames"))
         add("--log_path", payload.get("log_path"))
@@ -320,37 +486,87 @@ class Runner:
         add("--encode", payload.get("encode"))
         add("--audio_codec", payload.get("audio_codec"))
         add("--track_backend", payload.get("track_backend"))
+        add("--render_backend", payload.get("render_backend"))
         add("--keyframe_mode", payload.get("keyframe_mode"))
+        add("--eig_backend", payload.get("eig_backend"))
         add("--per_frame_batch", payload.get("per_frame_batch"))
         add("--per_frame_pipeline", payload.get("per_frame_pipeline"))
         if payload.get("cache_per_frame"):
             cmd.append("--cache_per_frame")
         if payload.get("clear_cache_on_exit"):
             cmd.append("--clear_cache_on_exit")
-        if payload.get("amp"):
+        if payload.get("keep_segments"):
+            cmd.append("--keep_segments")
+        amp = payload.get("amp")
+        if amp is True:
             cmd.append("--amp")
+        elif amp is False:
+            cmd.append("--no-amp")
+        pin_memory = payload.get("pin_memory")
+        if pin_memory is True:
+            cmd.append("--pin_memory")
+        elif pin_memory is False:
+            cmd.append("--no-pin_memory")
         if payload.get("copy_audio"):
             cmd.append("--copy_audio")
         return cmd
 
-    def _resolve_output(self, out_value: str | None) -> str:
+    def _build_precompile_command(self, payload: dict) -> list[str]:
+        cmd = [sys.executable, "-u", "tools/precompile.py"]
+
+        def add(flag: str, value) -> None:
+            if value is None:
+                return
+            if isinstance(value, str) and not value:
+                return
+            cmd.extend([flag, str(value)])
+
+        add("--device", payload.get("device"))
+        add("--sharp_ckpt", payload.get("sharp_ckpt"))
+        amp = payload.get("amp")
+        if amp is True:
+            cmd.append("--amp")
+        elif amp is False:
+            cmd.append("--no-amp")
+        pin_memory = payload.get("pin_memory")
+        if pin_memory is True:
+            cmd.append("--pin_memory")
+        elif pin_memory is False:
+            cmd.append("--no-pin_memory")
+        return cmd
+
+    def _resolve_batch_output(self, out_value: str | None, input_path: Path) -> str:
+        if out_value and str(out_value).strip():
+            return str(out_value)
+        if input_path.is_dir():
+            return str(input_path)
+        return str(input_path.parent)
+
+    def _resolve_output(self, out_value: str | None, input_path: Path, mode: str | None) -> str:
+        ext = ".png" if mode == "image" else ".mp4"
         if not out_value:
-            out_value = f"output_{int(time.time())}.mp4"
+            out_value = f"output_{int(time.time())}{ext}"
         out_path = Path(out_value)
+        if out_path.exists() and out_path.is_dir():
+            return str(out_path / f"{safe_filename(input_path.stem)}_sbs{ext}")
         if not out_path.suffix:
-            out_path = out_path.with_suffix(".mp4")
+            out_path = out_path.with_suffix(ext)
         if out_path.is_absolute() or ":" in out_value or out_value.startswith("\\\\"):
             return str(out_path)
         return str(OUTPUTS_DIR / out_path.name)
 
     @staticmethod
-    def _get_total_frames(video_path: Path, io_backend: str | None) -> int:
+    def _get_total_frames(video_path: Path, io_backend: str | None, target_fps: float | None) -> int:
         if io_backend == "ffmpeg":
-            total = _probe_total_frames(video_path)
+            total = _probe_total_frames(video_path, target_fps)
             if total > 0:
                 return total
         cap = cv2.VideoCapture(str(video_path))
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if target_fps and target_fps > 0 and total > 0:
+            src_fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+            if src_fps > 0:
+                total = int(total * (target_fps / src_fps) + 0.5)
         cap.release()
         return total
 
@@ -365,6 +581,12 @@ def index():
 @app.route("/favicon.ico")
 def favicon():
     return ("", 204)
+
+
+@app.route("/api/precompile", methods=["POST"])
+def api_precompile():
+    payload = request.get_json(force=True, silent=True) or {}
+    return jsonify(runner.start_precompile(payload))
 
 
 @app.route("/api/run", methods=["POST"])
@@ -385,6 +607,11 @@ def api_stream():
 @app.route("/api/ping")
 def api_ping():
     return jsonify({"ok": True})
+
+
+@app.route("/api/status")
+def api_status():
+    return jsonify(runner.get_status())
 
 
 def _pick_file(save: bool) -> tuple[str, str]:
@@ -492,7 +719,9 @@ def api_upload():
     stamp = int(time.time())
     save_path = UPLOADS_DIR / f"{stamp}_{name}"
     file.save(save_path)
-    suggested_output = Path(name).stem + "_sbs.mp4"
+    ext = Path(name).suffix.lower()
+    out_ext = ".png" if ext in IMAGE_EXTS else ".mp4"
+    suggested_output = Path(name).stem + f"_sbs{out_ext}"
     LOGGER.info("Uploaded file %s -> %s", file.filename, save_path)
     return jsonify(
         {
@@ -502,6 +731,41 @@ def api_upload():
             "suggested_output": suggested_output,
         }
     )
+
+
+@app.route("/api/upload_batch", methods=["POST"])
+def api_upload_batch():
+    files = request.files.getlist("files")
+    if not files:
+        return jsonify({"ok": False, "error": "未收到文件"})
+    stamp = int(time.time())
+    batch_dir = UPLOADS_DIR / f"batch_{stamp}"
+    batch_dir.mkdir(parents=True, exist_ok=True)
+
+    items = []
+    for file in files:
+        if not file.filename:
+            continue
+        safe_name = safe_filename(Path(file.filename).name)
+        if not safe_name:
+            continue
+        save_path = batch_dir / safe_name
+        counter = 1
+        while save_path.exists():
+            save_path = batch_dir / f"{save_path.stem}_{counter}{save_path.suffix}"
+            counter += 1
+        file.save(save_path)
+        items.append(
+            {
+                "name": file.filename,
+                "path": str(save_path),
+                "filename": save_path.name,
+            }
+        )
+    if not items:
+        return jsonify({"ok": False, "error": "没有可用文件"}), 400
+    LOGGER.info("Batch uploaded %d files -> %s", len(items), batch_dir)
+    return jsonify({"ok": True, "path": str(batch_dir), "items": items})
 
 
 @app.route("/api/download")

@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="styles.css?v=4" />
+    <link rel="stylesheet" href="styles.css?v=9" />
   </head>
   <body>
     <div class="bg-shapes">
@@ -43,41 +43,64 @@
       </div>
     </header>
 
-    <section class="preset-row">
-      <button class="preset" data-preset="comfort">舒适优先</button>
-      <button class="preset" data-preset="depth">立体感更强</button>
-      <button class="preset" data-preset="stable">保守稳定</button>
+    <section class="mode-row">
+      <button class="mode-tab active" data-mode="video">视频</button>
+      <button class="mode-tab" data-mode="image">图像</button>
+      <button class="mode-tab" data-mode="batch">批处理</button>
     </section>
 
     <main class="grid">
       <section class="card">
         <h2>输入与输出</h2>
         <div class="field">
-          <label for="videoPath">输入视频</label>
-          <div class="picker-row">
-            <input type="text" id="videoPath" placeholder="选择并上传后显示路径" readonly />
-            <button type="button" class="picker-btn" id="videoPickBtn">选择并上传</button>
-          </div>
-          <input type="file" id="videoPicker" accept="video/*" hidden />
-          <p class="hint" id="videoHint">未选择文件</p>
+          <label for="videoPath">输入路径</label>
+          <input type="text" id="videoPath" placeholder="可手动填写路径" />
+          <p class="hint" id="videoHint">支持拖拽或手动填写路径</p>
         </div>
+        <div class="dropzone" id="dropZone">
+          <div class="dropzone-copy">
+            <strong id="dropTitle">拖拽视频到这里</strong>
+            <p class="muted" id="dropSub">或点击选择文件</p>
+          </div>
+          <button type="button" class="picker-btn" id="videoPickBtn">选择视频</button>
+          <input type="file" id="videoPicker" accept="video/*" hidden />
+          <input type="file" id="batchPicker" accept="video/*" multiple hidden />
+        </div>
+        <div class="thumb-grid" id="thumbGrid"></div>
         <div class="field">
-          <label for="outPath">输出文件名</label>
+          <label for="outPath">输出路径 / 文件名</label>
           <div class="picker-row">
             <input type="text" id="outPath" placeholder="output_sbs.mp4" />
             <button type="button" class="picker-btn" id="downloadBtn">下载输出</button>
           </div>
-          <p class="hint" id="outHint">生成完成后可下载保存</p>
+          <p class="hint" id="outHint">批处理输出跟随输入目录</p>
+        </div>
+        <input type="checkbox" id="batchMode" hidden />
+        <div class="batch-panel" id="batchPanel" hidden>
+          <div class="batch-title">批处理提示</div>
+          <p>支持拖拽多个视频或填写目录路径。</p>
+          <p id="batchExample">示例：clip.mp4 → clip_sbs.mp4</p>
         </div>
         <label>
           调试目录（可选）
           <input type="text" id="debugDir" placeholder="debug_output" />
         </label>
+        <label class="visually-hidden">
+          处理模式
+          <select id="mode">
+            <option value="video" selected>视频 (SBS MP4)</option>
+            <option value="image">图像 (SBS PNG)</option>
+          </select>
+        </label>
+        <label>
+          分段阈值 (帧, 0=禁用)
+          <input type="number" id="segmentFrames" step="1" min="0" value="2000" />
+        </label>
         <label>
           设备
           <select id="device">
             <option value="auto">auto (优先 CUDA)</option>
-            <option value="cuda">cuda</option>
+            <option value="cuda" selected>cuda</option>
             <option value="cpu">cpu</option>
           </select>
         </label>
@@ -95,8 +118,8 @@
         </label>
         <label>
           最大视差 (px)
-          <input type="range" id="maxDisp" min="10" max="60" value="60" />
-          <div class="range-info"><span>10</span><span>60</span></div>
+          <input type="range" id="maxDisp" min="10" max="80" value="60" />
+          <div class="range-info"><span>10</span><span>80</span></div>
         </label>
         <label>
           水平 FOV (deg)
@@ -112,11 +135,15 @@
         </label>
         <label>
           最短镜头长度 (s)
-          <input type="number" id="minShot" step="0.01" value="0.01" />
+          <input type="number" id="minShot" step="0.01" value="0.5" />
         </label>
         <label>
           最长镜头长度 (s)
-          <input type="number" id="maxShot" step="0.01" value="0.05" />
+          <input type="number" id="maxShot" step="0.01" value="3.0" />
+        </label>
+        <label>
+          关键帧刷新间隔 (s)
+          <input type="number" id="keyframeRefresh" step="0.01" value="0" />
         </label>
         <label>
           PnP 最小内点
@@ -132,7 +159,7 @@
         <h2>编码与渲染</h2>
         <label>
           ffmpeg CRF
-          <input type="number" id="crf" step="1" value="18" />
+          <input type="number" id="crf" step="1" value="0" />
         </label>
         <label>
           ffmpeg preset
@@ -144,7 +171,7 @@
         </label>
         <label>
           补洞半径
-          <input type="number" id="inpaint" step="1" value="2" />
+          <input type="number" id="inpaint" step="1" value="0" />
         </label>
         <label class="checkbox-row">
           <input type="checkbox" id="copyAudio" checked />
@@ -154,12 +181,16 @@
           音频编码
           <select id="audioCodec">
             <option value="copy">copy</option>
-            <option value="aac">aac</option>
+            <option value="aac" selected>aac</option>
           </select>
         </label>
         <label>
           调试抽帧间隔
-          <input type="number" id="debugInterval" step="1" value="30" />
+          <input type="number" id="debugInterval" step="1" value="24" />
+        </label>
+        <label>
+          日志间隔（帧）
+          <input type="number" id="logInterval" step="1" value="100" min="1" />
         </label>
         <label>
           限制帧数（可选）
@@ -177,6 +208,10 @@
           </select>
         </label>
         <label>
+          目标帧率 (FPS)
+          <input type="number" id="targetFps" step="1" value="24" />
+        </label>
+        <label>
           解码后端
           <select id="decode">
             <option value="cpu">cpu</option>
@@ -186,34 +221,53 @@
         <label>
           编码器
           <select id="encode">
-            <option value="x264">x264</option>
+            <option value="x264" selected>x264</option>
             <option value="nvenc">nvenc</option>
-            <option value="hevc_nvenc" selected>hevc_nvenc (4K+)</option>
+            <option value="hevc_nvenc">hevc_nvenc (4K+)</option>
           </select>
         </label>
         <label>
           追踪后端
           <select id="trackBackend">
             <option value="cpu">cpu</option>
-            <option value="opencv_cuda">opencv_cuda</option>
+            <option value="opencv_cuda" selected>opencv_cuda</option>
           </select>
+        </label>
+        <label>
+          渲染后端
+          <select id="renderBackend">
+            <option value="cuda" selected>cuda (默认)</option>
+            <option value="cpu">cpu (实验/更慢)</option>
+          </select>
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" id="twoPass" />
+          两段式 (GPU 先生成高斯, CPU 再渲染)
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" id="gpuAssist" checked />
+          GPU 协助渲染 (Pass1 完成后)
+        </label>
+        <label>
+          两段式缓冲帧数
+          <input type="number" id="bufferFrames" step="1" min="0" value="8" />
         </label>
         <label>
           关键帧模式
           <select id="keyframeMode">
             <option value="normal">normal (auto)</option>
+            <option value="per_frame" selected>per_frame (every frame)</option>
             <option value="freeze">freeze (first only)</option>
             <option value="cache_only">cache_only (ply only)</option>
-            <option value="per_frame">per_frame (every frame)</option>
-          </select>
+                      </select>
         </label>
         <label>
           per_frame 批大小
-          <input type="number" id="perFrameBatch" step="1" min="1" value="1" />
+          <input type="number" id="perFrameBatch" step="1" min="1" value="2" />
         </label>
         <label>
           per_frame pipeline 深度
-          <input type="number" id="perFramePipeline" step="1" min="1" value="2" />
+          <input type="number" id="perFramePipeline" step="1" min="1" value="4" />
         </label>
         <label class="checkbox-row">
           <input type="checkbox" id="perFrameCache" />
@@ -224,8 +278,23 @@
           退出后清空缓存 (.cache_sharp)
         </label>
         <label class="checkbox-row">
-          <input type="checkbox" id="amp" />
+          <input type="checkbox" id="amp" checked />
           启用 FP16 (AMP)
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" id="pinMemory" checked />
+          启用 pinned memory (H2D)
+        </label>
+        <label>
+          EIG 后端
+          <select id="eigBackend">
+            <option value="cpu">cpu (稳定)</option>
+            <option value="cuda" selected>cuda (更快/可能轻微差异)</option>
+          </select>
+        </label>
+        <label>
+          性能统计间隔 (帧)
+          <input type="number" id="perfInterval" step="1" value="100" min="0" />
         </label>
       </section>
     </main>
@@ -242,9 +311,11 @@
         <div class="progress-bar" id="progressBar"></div>
       </div>
       <div class="progress-info" id="progressInfo">等待启动</div>
+      <p class="muted precompile-note" id="precompileNote">预编译会提前编译 CUDA 扩展并缓存权重，避免首次运行卡住。</p>
       <div class="actions">
         <button class="primary" id="runBtn">开始生成</button>
         <button class="ghost" id="stopBtn">停止</button>
+        <button class="ghost" id="precompileBtn">预编译</button>
         <button class="ghost" id="resetBtn">恢复默认</button>
       </div>
       <div class="log-box" id="logBox"></div>
@@ -254,6 +325,6 @@
       <span>提示：舒适优先时建议 max_disp ≤ 30，立体感增强可适度提高。</span>
     </footer>
 
-    <script src="app.js?v=4"></script>
+    <script src="app.js?v=9"></script>
   </body>
 </html>

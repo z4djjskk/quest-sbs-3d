@@ -13,7 +13,6 @@ import requests
 
 from sharp.cli.predict import DEFAULT_MODEL_URL
 from sharp.models import PredictorParams, create_predictor
-from sharp.utils import linalg
 from sharp.utils.gaussians import (
     Gaussians3D,
     SceneMetaData,
@@ -78,9 +77,10 @@ def _maybe_autocast(enabled: bool, device: torch.device):
 
 
 class SharpPredictor:
-    def __init__(self, device: str, checkpoint_path: str | None, use_amp: bool = False) -> None:
+    def __init__(self, device: str, checkpoint_path: str | None, use_amp: bool = False, pin_memory: bool = False) -> None:
         self.device = torch.device(device)
         self.use_amp = bool(use_amp)
+        self.pin_memory = bool(pin_memory)
         self.model = create_predictor(PredictorParams())
         self._load_weights(checkpoint_path)
         self.model.eval()
@@ -101,7 +101,14 @@ class SharpPredictor:
                 LOGGER.warning("Default download failed: %s", exc)
                 cached_path = _get_checkpoint_cache_path(DEFAULT_MODEL_URL)
                 if not cached_path.exists():
-                    _download_checkpoint_insecure(DEFAULT_MODEL_URL, cached_path)
+                    if os.environ.get("SHARP_ALLOW_INSECURE_DOWNLOAD") == "1":
+                        _download_checkpoint_insecure(DEFAULT_MODEL_URL, cached_path)
+                    else:
+                        raise RuntimeError(
+                            "SHARP checkpoint download failed. "
+                            "Set SHARP_ALLOW_INSECURE_DOWNLOAD=1 to allow an insecure fallback, "
+                            "or download manually and pass --sharp_ckpt."
+                        ) from exc
                 try:
                     state_dict = torch.load(cached_path, weights_only=True)
                 except TypeError:
@@ -121,6 +128,7 @@ class SharpPredictor:
                     f_px,
                     self.device,
                     use_amp=self.use_amp,
+                    pin_memory=self.pin_memory,
                 )
             except RuntimeError as exc:
                 if not self.use_amp or "Low precision dtypes not supported" not in str(exc):
@@ -132,6 +140,7 @@ class SharpPredictor:
                     f_px,
                     self.device,
                     use_amp=False,
+                    pin_memory=self.pin_memory,
                 )
 
     def predict_gaussians_batch(
@@ -147,6 +156,7 @@ class SharpPredictor:
                     f_px,
                     self.device,
                     use_amp=self.use_amp,
+                    pin_memory=self.pin_memory,
                 )
             except RuntimeError as exc:
                 if not self.use_amp or "Low precision dtypes not supported" not in str(exc):
@@ -158,6 +168,7 @@ class SharpPredictor:
                     f_px,
                     self.device,
                     use_amp=False,
+                    pin_memory=self.pin_memory,
                 )
 
 
@@ -289,10 +300,18 @@ def _predict_image_amp_safe(
     f_px: float,
     device: torch.device,
     use_amp: bool,
+    pin_memory: bool,
 ) -> Gaussians3D:
     internal_shape = (1536, 1536)
 
-    image_pt = torch.from_numpy(image.copy()).float().to(device).permute(2, 0, 1) / 255.0
+    image_np = np.ascontiguousarray(image)
+    if not image_np.flags.writeable:
+        image_np = image_np.copy()
+    image_pt = torch.from_numpy(image_np)
+    if pin_memory and device.type == "cuda":
+        image_pt = image_pt.pin_memory()
+    image_pt = image_pt.to(device=device, dtype=torch.float32, non_blocking=pin_memory)
+    image_pt = image_pt.permute(2, 0, 1) / 255.0
     _, height, width = image_pt.shape
     disparity_factor = torch.tensor([f_px / width], device=device, dtype=torch.float32)
 
@@ -342,6 +361,7 @@ def _predict_batch_amp_safe(
     f_px: float,
     device: torch.device,
     use_amp: bool,
+    pin_memory: bool,
 ) -> Gaussians3D:
     images_np = np.asarray(images)
     if images_np.ndim == 3:
@@ -350,10 +370,16 @@ def _predict_batch_amp_safe(
         raise ValueError("images must be shaped as (B, H, W, 3)")
     batch = images_np.shape[0]
     if batch == 1:
-        return _predict_image_amp_safe(predictor, images_np[0], f_px, device, use_amp)
+        return _predict_image_amp_safe(predictor, images_np[0], f_px, device, use_amp, pin_memory)
 
     internal_shape = (1536, 1536)
-    image_pt = torch.from_numpy(images_np.copy()).float().to(device) / 255.0
+    images_np = np.ascontiguousarray(images_np)
+    if not images_np.flags.writeable:
+        images_np = images_np.copy()
+    image_pt = torch.from_numpy(images_np)
+    if pin_memory and device.type == "cuda":
+        image_pt = image_pt.pin_memory()
+    image_pt = image_pt.to(device=device, dtype=torch.float32, non_blocking=pin_memory) / 255.0
     image_pt = image_pt.permute(0, 3, 1, 2)
     _, _, height, width = image_pt.shape
     disparity = f_px / width
@@ -458,9 +484,162 @@ def _apply_transform_fp32(gaussians: Gaussians3D, transform: torch.Tensor) -> Ga
     )
 
 
+def _quaternions_from_rotation_matrices_torch(matrices: torch.Tensor) -> torch.Tensor:
+    if matrices.shape[-2:] != (3, 3):
+        raise ValueError(f"matrices have invalid shape {matrices.shape}")
+
+    m00 = matrices[..., 0, 0]
+    m01 = matrices[..., 0, 1]
+    m02 = matrices[..., 0, 2]
+    m10 = matrices[..., 1, 0]
+    m11 = matrices[..., 1, 1]
+    m12 = matrices[..., 1, 2]
+    m20 = matrices[..., 2, 0]
+    m21 = matrices[..., 2, 1]
+    m22 = matrices[..., 2, 2]
+
+    trace = m00 + m11 + m22
+    eps = torch.finfo(matrices.dtype).eps
+
+    qw = torch.zeros_like(trace)
+    qx = torch.zeros_like(trace)
+    qy = torch.zeros_like(trace)
+    qz = torch.zeros_like(trace)
+
+    cond0 = trace > 0.0
+    s0 = torch.sqrt(torch.clamp(trace + 1.0, min=0.0)) * 2.0
+    s0 = torch.where(s0 > eps, s0, torch.full_like(s0, eps))
+    qw0 = 0.25 * s0
+    qx0 = (m21 - m12) / s0
+    qy0 = (m02 - m20) / s0
+    qz0 = (m10 - m01) / s0
+
+    cond1 = (~cond0) & (m00 > m11) & (m00 > m22)
+    s1 = torch.sqrt(torch.clamp(1.0 + m00 - m11 - m22, min=0.0)) * 2.0
+    s1 = torch.where(s1 > eps, s1, torch.full_like(s1, eps))
+    qw1 = (m21 - m12) / s1
+    qx1 = 0.25 * s1
+    qy1 = (m01 + m10) / s1
+    qz1 = (m02 + m20) / s1
+
+    cond2 = (~cond0) & (~cond1) & (m11 > m22)
+    s2 = torch.sqrt(torch.clamp(1.0 + m11 - m00 - m22, min=0.0)) * 2.0
+    s2 = torch.where(s2 > eps, s2, torch.full_like(s2, eps))
+    qw2 = (m02 - m20) / s2
+    qx2 = (m01 + m10) / s2
+    qy2 = 0.25 * s2
+    qz2 = (m12 + m21) / s2
+
+    cond3 = (~cond0) & (~cond1) & (~cond2)
+    s3 = torch.sqrt(torch.clamp(1.0 + m22 - m00 - m11, min=0.0)) * 2.0
+    s3 = torch.where(s3 > eps, s3, torch.full_like(s3, eps))
+    qw3 = (m10 - m01) / s3
+    qx3 = (m02 + m20) / s3
+    qy3 = (m12 + m21) / s3
+    qz3 = 0.25 * s3
+
+    qw = torch.where(cond0, qw0, qw)
+    qx = torch.where(cond0, qx0, qx)
+    qy = torch.where(cond0, qy0, qy)
+    qz = torch.where(cond0, qz0, qz)
+
+    qw = torch.where(cond1, qw1, qw)
+    qx = torch.where(cond1, qx1, qx)
+    qy = torch.where(cond1, qy1, qy)
+    qz = torch.where(cond1, qz1, qz)
+
+    qw = torch.where(cond2, qw2, qw)
+    qx = torch.where(cond2, qx2, qx)
+    qy = torch.where(cond2, qy2, qy)
+    qz = torch.where(cond2, qz2, qz)
+
+    qw = torch.where(cond3, qw3, qw)
+    qx = torch.where(cond3, qx3, qx)
+    qy = torch.where(cond3, qy3, qy)
+    qz = torch.where(cond3, qz3, qz)
+
+    quat = torch.stack((qw, qx, qy, qz), dim=-1)
+    return quat / torch.clamp(torch.linalg.norm(quat, dim=-1, keepdim=True), min=1e-8)
+
+
+def _decompose_covariance_matrices_cuda(
+    covariance_matrices: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    device = covariance_matrices.device
+    dtype = covariance_matrices.dtype
+    cov_flat = covariance_matrices.reshape(-1, 3, 3)
+    total = int(cov_flat.shape[0])
+    if total == 0:
+        out_shape = covariance_matrices.shape[:-2]
+        empty_quat = torch.empty((*out_shape, 4), device=device, dtype=dtype)
+        empty_sv = torch.empty((*out_shape, 3), device=device, dtype=dtype)
+        return empty_quat, empty_sv
+
+    chunk_size = int(os.environ.get("SHARP_EIG_CHUNK_SIZE", "262144"))
+    max_chunk = int(os.environ.get("SHARP_EIG_CHUNK_SIZE_MAX", "0"))
+    if chunk_size <= 0:
+        chunk_size = total
+    if max_chunk > 0:
+        chunk_size = min(chunk_size, max_chunk)
+    chunk_size = min(chunk_size, total)
+
+    quaternions = torch.empty((total, 4), device=device, dtype=torch.float32)
+    singular_values = torch.empty((total, 3), device=device, dtype=torch.float32)
+    for start in range(0, total, chunk_size):
+        end = min(start + chunk_size, total)
+        cov = cov_flat[start:end].to(dtype=torch.float32)
+        cov = torch.nan_to_num(cov, nan=0.0, posinf=0.0, neginf=0.0)
+        cov = 0.5 * (cov + cov.transpose(-1, -2))
+        scale = cov.abs().amax(dim=(-1, -2))
+        scale = torch.where(scale > 0, scale, torch.ones_like(scale))
+        cov = cov / scale[:, None, None]
+        diag = cov.diagonal(dim1=-2, dim2=-1)
+        diag_scale = diag.abs().mean(dim=-1)
+        eps = torch.clamp(diag_scale, min=1e-6) * 1e-4
+        cov = cov + torch.eye(3, device=device, dtype=cov.dtype) * eps[:, None, None]
+        try:
+            eigvals, eigvecs = torch.linalg.eigh(cov)
+        except RuntimeError:
+            try:
+                cov64 = cov.to(dtype=torch.float64)
+                eigvals64, eigvecs64 = torch.linalg.eigh(cov64)
+                eigvals = eigvals64.to(dtype=torch.float32)
+                eigvecs = eigvecs64.to(dtype=torch.float32)
+            except RuntimeError:
+                u, s, _ = torch.linalg.svd(cov)
+                eigvals = s
+                eigvecs = u
+        det = torch.linalg.det(eigvecs)
+        sign = torch.where(det < 0, -1.0, 1.0).to(eigvecs.dtype)
+        eigvecs[..., :, -1] *= sign.unsqueeze(-1)
+
+        eigvals = torch.clamp(eigvals, min=0.0) * scale[:, None]
+        singular_values[start:end] = eigvals.sqrt().to(torch.float32)
+        eigvecs = eigvecs.to(torch.float32)
+        quaternions[start:end] = _quaternions_from_rotation_matrices_torch(eigvecs)
+
+    out_shape = covariance_matrices.shape[:-2]
+    return (
+        quaternions.view(*out_shape, 4).to(dtype=dtype),
+        singular_values.view(*out_shape, 3).to(dtype=dtype),
+    )
+
+
 def _decompose_covariance_matrices_stable(
     covariance_matrices: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    backend = os.environ.get("SHARP_EIG_BACKEND", "cpu").lower()
+    if backend == "cuda":
+        if not covariance_matrices.is_cuda:
+            raise RuntimeError(
+                "SHARP_EIG_BACKEND=cuda but tensor is on CPU; refusing CPU fallback."
+            )
+        try:
+            return _decompose_covariance_matrices_cuda(covariance_matrices)
+        except Exception as exc:
+            raise RuntimeError(
+                "CUDA eig failed with SHARP_EIG_BACKEND=cuda; refusing CPU fallback."
+            ) from exc
     device = covariance_matrices.device
     dtype = covariance_matrices.dtype
 
@@ -498,6 +677,7 @@ def _decompose_covariance_matrices_stable(
     for start in range(0, total, chunk_size):
         end = min(start + chunk_size, total)
         cov_cpu = cov_flat[start:end].detach().cpu().to(torch.float64)
+        cov_cpu = torch.nan_to_num(cov_cpu, nan=0.0, posinf=0.0, neginf=0.0)
         eigvals, eigvecs = torch.linalg.eigh(cov_cpu)
         det = torch.linalg.det(eigvecs)
         sign = torch.where(det < 0, -1.0, 1.0).to(eigvecs.dtype)
@@ -506,7 +686,7 @@ def _decompose_covariance_matrices_stable(
         eigvals = torch.clamp(eigvals, min=0.0)
         singular_values = eigvals.sqrt().to(torch.float32)
         eigvecs = eigvecs.to(torch.float32)
-        quaternions = linalg.quaternions_from_rotation_matrices(eigvecs)
+        quaternions = _quaternions_from_rotation_matrices_torch(eigvecs)
         quaternions_cpu[start:end] = quaternions.cpu()
         singular_values_cpu[start:end] = singular_values.cpu()
 

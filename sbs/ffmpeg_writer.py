@@ -51,6 +51,10 @@ class FFmpegWriter:
         codec = "libx264"
         preset = self.preset
         extra = []
+        extra_x264 = []
+        lossless = self.crf <= 0
+        pixel_count = self.width * self.height
+        large_frame = pixel_count >= 12_000_000
         if self.encoder in ("nvenc", "hevc_nvenc"):
             preset_map = {"slow": "p7", "medium": "p4", "fast": "p2"}
             preset = preset_map.get(self.preset, "p4")
@@ -74,9 +78,20 @@ class FFmpegWriter:
 
             if target and _has_encoder(target):
                 codec = target
-                extra = ["-rc", "vbr", "-cq", str(self.crf)]
+                if lossless:
+                    extra = ["-rc", "constqp", "-qp", "0"]
+                else:
+                    extra = ["-rc", "vbr", "-cq", str(self.crf)]
             elif target:
                 logging.warning("FFmpeg encoder %s not available; falling back to x264.", target)
+        elif self.encoder == "x264" and lossless and large_frame:
+            logging.warning(
+                "Large lossless encode at %dx%d; using low-memory x264 settings.",
+                self.width,
+                self.height,
+            )
+            preset = "ultrafast"
+            extra_x264 = ["-tune", "zerolatency", "-x264-params", "rc-lookahead=0:bframes=0"]
         elif self.encoder != "x264":
             logging.warning("Unknown encoder %s, falling back to x264.", self.encoder)
 
@@ -115,6 +130,7 @@ class FFmpegWriter:
         ]
         if codec == "libx264":
             cmd += ["-crf", str(self.crf)]
+            cmd += extra_x264
         else:
             cmd += extra
         if audio_path:

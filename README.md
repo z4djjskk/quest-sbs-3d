@@ -48,8 +48,11 @@ Open `http://127.0.0.1:7860`, upload a video to local cache, and click "Download
 - `--baseline_m`: default 0.03m, comfort first.
 - `--max_disp_px`: max disparity in pixels, default 30. Larger = stronger depth but more motion sickness.
 - `--fov_deg`: default 60 (horizontal FOV). If depth feels wrong, adjust this first.
+- `--target_fps`: resample input to target FPS (default 24).
 - `--cut_threshold` / `--max_shot_len`: shot cut stability.
+- `--keyframe_refresh_s`: force SHARP keyframe refresh every N seconds (0=disable), useful for dynamic motion.
 - `--debug_dir`: export keyframe depth, sampled SBS, and pose logs.
+- `--log_interval`: log every N frames (default 1); increase to reduce logging overhead.
 
 ## Definition of Done (checked/logged in code)
 
@@ -65,14 +68,14 @@ Open `http://127.0.0.1:7860`, upload a video to local cache, and click "Download
 3) Performance & engineering
 - SHARP only on keyframes; 3DGS `.ply` cache.
 - ffmpeg pipe streaming encode (no intermediate frames on disk).
-- Diagnostics: per-frame logs (`inliers/reproj/new keyframe/render_ms`), `--debug_dir` exports key results.
+- Diagnostics: per-frame logs (`inliers/reproj/new keyframe/render_ms`); use `--log_interval` to reduce log frequency; `--debug_dir` exports key results.
 
 ## Common errors
 
 - CUDA not available: install CUDA-enabled PyTorch, check with `python tools/env_check.py`.
 - `ffmpeg` not in PATH: install ffmpeg and set environment variables.
 - SHARP model download fails: set a proxy or pass `--sharp_ckpt` with a local checkpoint.
-- If SSL cert errors happen, the program auto-falls back to a one-time unverified download.
+- If SSL cert errors happen, set SHARP_ALLOW_INSECURE_DOWNLOAD=1 to allow an insecure fallback, or download manually and pass --sharp_ckpt.
 
 ## Dependencies
 

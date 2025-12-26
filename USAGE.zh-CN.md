@@ -152,27 +152,10 @@ python tools/web_server.py
 
 ### 质量优先（慢）
 ```bash
-python tools/video_to_sbs.py \
-  --mode video \
-  --video input.mp4 \
-  --out output_sbs.mp4 \
-  --keyframe_mode per_frame \
-  --per_frame_batch 1 \
-  --per_frame_pipeline 2 \
-  --encode hevc_nvenc \
-  --ffmpeg_crf 10 \
-  --copy_audio
+python tools/video_to_sbs.py   --mode video   --video input.mp4   --out output_sbs.mp4   --keyframe_mode per_frame   --per_frame_batch 1   --per_frame_pipeline 2   --encode hevc_nvenc   --ffmpeg_crf 10   --copy_audio
 ```
 
 ### 性能优先（快）
 ```bash
-python tools/video_to_sbs.py \
-  --mode video \
-  --video input.mp4 \
-  --out output_sbs.mp4 \
-  --keyframe_mode normal \
-  --per_frame_pipeline 2 \
-  --encode nvenc \
-  --ffmpeg_crf 18 \
-  --copy_audio
+python tools/video_to_sbs.py   --mode video   --video input.mp4   --out output_sbs.mp4   --keyframe_mode normal   --per_frame_pipeline 2   --encode nvenc   --ffmpeg_crf 18   --copy_audio
 ```
