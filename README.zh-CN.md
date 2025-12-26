@@ -3,6 +3,8 @@
 
 目标：把任意 2D 视频转换为 Quest 可舒适观看的高质量 3D 立体视频（SBS 左右并排 mp4）。
 
+详细使用说明：见 [USAGE.zh-CN.md](USAGE.zh-CN.md)。
+
 ## 安装
 
 步骤 1 / 安装 Python 依赖
@@ -48,8 +50,11 @@ python tools/web_server.py
 - `--baseline_m`：默认 0.03m，舒适优先。
 - `--max_disp_px`：视差上限（像素），默认 30，越大越强烈但越容易眩晕。
 - `--fov_deg`：默认 60（水平 FOV）。若画面深度不对，优先调这个。
+- `--target_fps`：输入重采样到目标帧率（默认 24）。
 - `--cut_threshold` / `--max_shot_len`：镜头切分稳定性。
+- `--keyframe_refresh_s`：每隔 N 秒强制刷新一次 SHARP 关键帧（0=关闭），用于缓解动态主体卡顿。
 - `--debug_dir`：导出关键帧深度、采样 SBS、位姿日志。
+- `--log_interval`：日志间隔（帧），默认 1；调大可降低日志开销。
 
 ## Definition of Done（已在代码中检查/日志化）
 
@@ -65,14 +70,14 @@ python tools/web_server.py
 3) 性能与工程质量
 - SHARP 仅关键帧调用，3DGS `.ply` 缓存。
 - ffmpeg pipe 流式编码（不落盘中间帧）。
-- 输出可诊断：每帧 log（inliers/reproj/new keyframe/render_ms），`--debug_dir` 导出关键结果。
+- 输出可诊断：默认每帧 log（inliers/reproj/new keyframe/render_ms），可用 `--log_interval` 调整间隔，`--debug_dir` 导出关键结果。
 
 ## 常见报错
 
 - CUDA 不可用：确保装了 CUDA 版 PyTorch，`python tools/env_check.py` 查看状态。
 - `ffmpeg` 不在 PATH：安装 ffmpeg 并配置环境变量。
 - SHARP 模型下载失败：设置代理或手动下载后用 `--sharp_ckpt` 指定。
-- 如果遇到 SSL 证书错误，程序会自动启用一次不校验证书的下载兜底。
+- 如果遇到 SSL 证书错误，需要设置 SHARP_ALLOW_INSECURE_DOWNLOAD=1 才会启用不校验证书的下载兜底，或手动下载并用 --sharp_ckpt 指定。
 
 ## 依赖项目
 
