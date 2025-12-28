@@ -44,6 +44,7 @@
 
 - State:
   - Done:
+    - 已完成提交与推送（main 已与 origin/main 同步）。
     - 已生成并推送文档更新。
     - 已设置用户级 `GITHUB_TOKEN`。
   - Now:
@@ -67,27 +68,29 @@
 ## EXECUTION PLAN (PLANS) 〞 multi-hour execution scaffold (edit this section)
 
 ### Goal
-- 上传到 GitHub，并输出详细使用说明。
+- 提交并推送当前代码到 GitHub。
 
 ### Acceptance Criteria
-- [x] 详细使用说明文档完成。
-- [x] 文档已推送到 GitHub。
-- [ ] 代码已同步到 GitHub。
+- [ ] 清理阻塞的 git lock。
+- [ ] 完成 git add/commit。
+- [ ] 推送到远端仓库成功。
 
 ### Plan (3-7 steps max)
-- [ ] 通过 GitHub API 推送完整代码。 — pending
-- [ ] 校验远端内容。 — pending
+- [ ] 清理 .git/index.lock 并重试 git add。 — in_progress
+- [ ] 提交 AGENTS.md。 — pending
+- [ ] 推送到远端仓库。 — pending
 
 ### Verification commands (copy-paste)
     <none>
 
 ### Progress
 - Pending:
-  - 通过 GitHub API 推送完整代码。
-  - 校验远端内容。
+  - 提交 AGENTS.md。
+  - 推送到远端仓库。
 - In Progress:
+  - 清理 .git/index.lock 并重试 git add。
 - Completed:
-  - 编写详细使用说明并推送。
+  - <none>
 
 ### Risks / Tradeoffs
-- Risk: 覆盖远端现有版本。  Mitigation: 直接更新 main 并说明结果。
+- Risk: 锁文件删除不当。  Mitigation: 确认无 git 进程后再删除。
