@@ -30,34 +30,34 @@
 ## CONTINUITY LEDGER (edit this section only; keep headings)
 
 - Goal (incl. success criteria):
-  - 上传到 GitHub，并写一份十分详细的使用说明。
+  - 上传完整代码到 GitHub。
   - Success criteria:
-    - [x] 生成详细使用说明 Markdown（中文）。
-    - [x] 文档已推送到 GitHub（USAGE.zh-CN.md + README.zh-CN.md + agent.md）。
-    - [ ] 完整代码同步到 GitHub。
+    - [ ] 远端显示最新提交（包含代码变更）。
+    - [ ] 通过可用通道完成同步（git 或 GitHub API）。
 
 - Constraints/Assumptions:
-  - 本地 Git 无法写入 `.git`；代码将通过 GitHub API 推送。
+  - `.git` 目录对当前用户有 ACL 拒绝，无法创建 index.lock。
+  - 允许使用 GitHub API 进行提交（网络已启用）。
 
 - Key decisions:
-  - 代码同步走 GitHub API（覆盖式更新 main）。
+  - 通过 GitHub API `push_files` 同步完整代码（规避本地 git 写权限）。
 
 - State:
   - Done:
-    - 已完成提交与推送（main 已与 origin/main 同步）。
-    - 已生成并推送文档更新。
-    - 已设置用户级 `GITHUB_TOKEN`。
+    - 已重新生成 push_files.json（含最新 AGENTS.md）。
+    - 发现本地 git commit 被 ACL 阻止（.git/index.lock 权限拒绝）。
+    - 临时仓库 fetch 失败（代理 127.0.0.1 连接 GitHub 失败）。
   - Now:
-    - 推送完整代码到 GitHub。
+    - 调用 GitHub API push_files 提交。
   - Next:
-    - 核验远端内容与提交。
+    - 确认远端提交结果。
 
 - Open questions (UNCONFIRMED if needed):
   - <none>
 
 - Working set (files/ids/commands):
   - Files:
-    - push_payload.json
+    - C:\Users\Q\Desktop\codex_artifacts\push_files.json
   - Commands:
     - <none>
   - Artifacts/Refs:
@@ -68,30 +68,27 @@
 ## EXECUTION PLAN (PLANS) 〞 multi-hour execution scaffold (edit this section)
 
 ### Goal
-- 提交并推送当前代码到 GitHub。
+- 同步完整代码到 GitHub。
 
 ### Acceptance Criteria
-- [ ] 清理阻塞的 git lock。
-- [ ] 完成 git add/commit。
-- [ ] 推送到远端仓库成功。
+- [ ] 远端显示最新提交。
+- [ ] 通过 API 完成完整同步。
 
 ### Plan (3-7 steps max)
-- [x] 清理 .git/index.lock 并重试 git add。 — completed
-- [x] 提交 AGENTS.md。 — completed
-- [x] 推送到远端仓库。 — completed
+- [ ] 读取 push_files.json 并准备推送。 — completed
+- [ ] 通过 GitHub API push_files 提交。 — in_progress
+- [ ] 复核远端提交时间。 — pending
 
 ### Verification commands (copy-paste)
     <none>
 
 ### Progress
 - Pending:
-  - <none>
+  - 复核远端提交时间。
 - In Progress:
-  - <none>
+  - 通过 GitHub API push_files 提交。
 - Completed:
-  - 清理 .git/index.lock 并重试 git add。
-  - 提交 AGENTS.md。
-  - 推送到远端仓库。
+  - 读取 push_files.json 并准备推送。
 
 ### Risks / Tradeoffs
-- Risk: 锁文件删除不当。  Mitigation: 确认无 git 进程后再删除。
+- Risk: 远端已有更新导致冲突。  Mitigation: 先 fetch/rebase 或说明冲突处理方案。
