@@ -76,21 +76,22 @@
 - [ ] 推送到远端仓库成功。
 
 ### Plan (3-7 steps max)
-- [ ] 清理 .git/index.lock 并重试 git add。 — in_progress
-- [ ] 提交 AGENTS.md。 — pending
-- [ ] 推送到远端仓库。 — pending
+- [x] 清理 .git/index.lock 并重试 git add。 — completed
+- [x] 提交 AGENTS.md。 — completed
+- [x] 推送到远端仓库。 — completed
 
 ### Verification commands (copy-paste)
     <none>
 
 ### Progress
 - Pending:
+  - <none>
+- In Progress:
+  - <none>
+- Completed:
+  - 清理 .git/index.lock 并重试 git add。
   - 提交 AGENTS.md。
   - 推送到远端仓库。
-- In Progress:
-  - 清理 .git/index.lock 并重试 git add。
-- Completed:
-  - <none>
 
 ### Risks / Tradeoffs
 - Risk: 锁文件删除不当。  Mitigation: 确认无 git 进程后再删除。
