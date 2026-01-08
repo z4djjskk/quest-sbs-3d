@@ -83,6 +83,27 @@ python tools/web_server.py
 - SHARP 模型下载失败：设置代理或手动下载后用 `--sharp_ckpt` 指定。
 - 如果遇到 SSL 证书错误，需要设置 SHARP_ALLOW_INSECURE_DOWNLOAD=1 才会启用不校验证书的下载兜底，或手动下载并用 --sharp_ckpt 指定。
 
+## 反馈模板
+
+请按以下模板反馈问题：
+
+- 问题简述
+- 运行命令（完整）
+- 完整日志（不要截断）
+- 环境信息：Windows 版本、Python 版本、GPU 型号、NVIDIA 驱动版本、CUDA 版本、PyTorch 版本
+- 编译工具链（编译类报错必填）
+
+建议执行以下命令并粘贴输出：
+
+```bash
+python --version
+where nvcc
+nvcc --version
+where cl
+cl
+"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+```
+
 ## 依赖项目
 
 - Apple SHARP: https://github.com/apple/ml-sharp

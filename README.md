@@ -81,6 +81,27 @@ Open `http://127.0.0.1:7860`, upload a video to local cache, and click "Download
 - SHARP model download fails: set a proxy or pass `--sharp_ckpt` with a local checkpoint.
 - If SSL cert errors happen, set SHARP_ALLOW_INSECURE_DOWNLOAD=1 to allow an insecure fallback, or download manually and pass --sharp_ckpt.
 
+## Issue report template
+
+Please include the following when reporting an error:
+
+- Problem summary
+- Command used (full)
+- Full log output (do not truncate)
+- Environment: Windows version, Python version, GPU model, NVIDIA driver, CUDA version, PyTorch version
+- Build toolchain (for compile errors)
+
+Suggested commands (copy/paste):
+
+```bash
+python --version
+where nvcc
+nvcc --version
+where cl
+cl
+"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+```
+
 ## Dependencies
 
 - Apple SHARP: https://github.com/apple/ml-sharp
