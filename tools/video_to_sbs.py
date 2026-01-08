@@ -28,6 +28,42 @@ def _add_dll_dir(path: Path) -> None:
     except (AttributeError, OSError):
         return
 
+def _find_cl_exe() -> Path | None:
+    vswhere = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe")
+    if vswhere.exists():
+        try:
+            result = subprocess.run(
+                [
+                    str(vswhere),
+                    "-latest",
+                    "-products",
+                    "*",
+                    "-requires",
+                    "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                    "-property",
+                    "installationPath",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            install_path = result.stdout.strip().splitlines()[0] if result.stdout else ""
+            if install_path:
+                msvc_root = Path(install_path) / "VC" / "Tools" / "MSVC"
+                if msvc_root.exists():
+                    matches = list(msvc_root.glob("**/bin/Hostx64/x64/cl.exe"))
+                    if matches:
+                        return matches[0]
+        except Exception:
+            pass
+
+    buildtools_root = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC")
+    if buildtools_root.exists():
+        matches = list(buildtools_root.glob("**/bin/Hostx64/x64/cl.exe"))
+        if matches:
+            return matches[0]
+    return None
+
 os.environ.setdefault("PYTHONUTF8", "1")
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "12.0")
@@ -58,12 +94,10 @@ if _opencv_bin.exists():
     os.environ["PATH"] = f"{_opencv_bin};{os.environ.get('PATH', '')}"
     _add_dll_dir(_opencv_bin)
 
-_msvc_root = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC")
-if _msvc_root.exists():
-    cl_candidates = list(_msvc_root.glob("**/bin/Hostx64/x64/cl.exe"))
-    if cl_candidates:
-        cl_bin = cl_candidates[0].parent
-        os.environ["PATH"] = f"{cl_bin};{os.environ.get('PATH', '')}"
+_cl_exe = _find_cl_exe()
+if _cl_exe:
+    cl_bin = _cl_exe.parent
+    os.environ["PATH"] = f"{cl_bin};{os.environ.get('PATH', '')}"
 
 import cv2
 import numpy as np

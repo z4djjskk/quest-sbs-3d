@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -17,6 +18,42 @@ def _add_dll_dir(path: Path) -> None:
         os.add_dll_directory(str(path))
     except (AttributeError, OSError):
         return
+
+def _find_cl_exe() -> Path | None:
+    vswhere = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe")
+    if vswhere.exists():
+        try:
+            result = subprocess.run(
+                [
+                    str(vswhere),
+                    "-latest",
+                    "-products",
+                    "*",
+                    "-requires",
+                    "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                    "-property",
+                    "installationPath",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            install_path = result.stdout.strip().splitlines()[0] if result.stdout else ""
+            if install_path:
+                msvc_root = Path(install_path) / "VC" / "Tools" / "MSVC"
+                if msvc_root.exists():
+                    matches = list(msvc_root.glob("**/bin/Hostx64/x64/cl.exe"))
+                    if matches:
+                        return matches[0]
+        except Exception:
+            pass
+
+    buildtools_root = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC")
+    if buildtools_root.exists():
+        matches = list(buildtools_root.glob("**/bin/Hostx64/x64/cl.exe"))
+        if matches:
+            return matches[0]
+    return None
 
 
 os.environ.setdefault("PYTHONUTF8", "1")
@@ -40,6 +77,11 @@ if _cuda_bin.exists():
     os.environ["PATH"] = f"{_cuda_bin};{os.environ.get('PATH', '')}"
     os.environ.setdefault("GSPLAT_CUDA_HOME", str(_cuda_root))
     _add_dll_dir(_cuda_bin)
+
+_cl_exe = _find_cl_exe()
+if _cl_exe:
+    cl_bin = _cl_exe.parent
+    os.environ["PATH"] = f"{cl_bin};{os.environ.get('PATH', '')}"
 
 from sbs.rendering import build_intrinsics
 from sbs.sharp_backend import SharpPredictor, SharpRenderer

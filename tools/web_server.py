@@ -48,12 +48,46 @@ if _CUDA_BIN.exists():
     os.environ["PATH"] = f"{_CUDA_BIN};{os.environ.get('PATH', '')}"
     os.environ.setdefault("GSPLAT_CUDA_HOME", str(_CUDA_ROOT))
 
-_MSVC_ROOT = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC")
-if _MSVC_ROOT.exists():
-    cl_candidates = list(_MSVC_ROOT.glob("**/bin/Hostx64/x64/cl.exe"))
-    if cl_candidates:
-        cl_bin = cl_candidates[0].parent
-        os.environ["PATH"] = f"{cl_bin};{os.environ.get('PATH', '')}"
+def _find_cl_exe() -> Path | None:
+    vswhere = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe")
+    if vswhere.exists():
+        try:
+            result = subprocess.run(
+                [
+                    str(vswhere),
+                    "-latest",
+                    "-products",
+                    "*",
+                    "-requires",
+                    "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                    "-property",
+                    "installationPath",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            install_path = result.stdout.strip().splitlines()[0] if result.stdout else ""
+            if install_path:
+                msvc_root = Path(install_path) / "VC" / "Tools" / "MSVC"
+                if msvc_root.exists():
+                    matches = list(msvc_root.glob("**/bin/Hostx64/x64/cl.exe"))
+                    if matches:
+                        return matches[0]
+        except Exception:
+            pass
+
+    buildtools_root = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC")
+    if buildtools_root.exists():
+        matches = list(buildtools_root.glob("**/bin/Hostx64/x64/cl.exe"))
+        if matches:
+            return matches[0]
+    return None
+
+_cl_exe = _find_cl_exe()
+if _cl_exe:
+    cl_bin = _cl_exe.parent
+    os.environ["PATH"] = f"{cl_bin};{os.environ.get('PATH', '')}"
 
 def _add_dll_dir(path: Path) -> None:
     try:

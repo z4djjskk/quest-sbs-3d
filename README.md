@@ -73,7 +73,9 @@ Open `http://127.0.0.1:7860`, upload a video to local cache, and click "Download
 ## Common errors
 
 - CUDA not available: install CUDA-enabled PyTorch, check with `python tools/env_check.py`.
+- `where cl` fails (MSVC not found): open "x64 Native Tools Command Prompt for VS 2022", then activate the venv and retry; ensure "Desktop development with C++" and MSVC v143 are installed.
 - `ffmpeg` not in PATH: install ffmpeg and set environment variables.
+- `opencv.cuda: MISSING`: pip OpenCV is CPU-only; use `--track_backend cpu` or install a CUDA-enabled OpenCV build and set `OPENCV_BIN`.
 - SHARP model download fails: set a proxy or pass `--sharp_ckpt` with a local checkpoint.
 - If SSL cert errors happen, set SHARP_ALLOW_INSECURE_DOWNLOAD=1 to allow an insecure fallback, or download manually and pass --sharp_ckpt.
 

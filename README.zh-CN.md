@@ -75,7 +75,9 @@ python tools/web_server.py
 ## 常见报错
 
 - CUDA 不可用：确保装了 CUDA 版 PyTorch，`python tools/env_check.py` 查看状态。
+- `where cl`/`cl.exe` 找不到：请用 "x64 Native Tools Command Prompt for VS 2022" 打开，再激活 venv 运行；确认已安装 "Desktop development with C++" 和 MSVC v143 组件。
 - `ffmpeg` 不在 PATH：安装 ffmpeg 并配置环境变量。
+- `opencv.cuda: MISSING`：pip 安装的 OpenCV 仅 CPU 版；可用 `--track_backend cpu`，或自编译 CUDA 版并设置 `OPENCV_BIN`。
 - SHARP 模型下载失败：设置代理或手动下载后用 `--sharp_ckpt` 指定。
 - 如果遇到 SSL 证书错误，需要设置 SHARP_ALLOW_INSECURE_DOWNLOAD=1 才会启用不校验证书的下载兜底，或手动下载并用 --sharp_ckpt 指定。
 

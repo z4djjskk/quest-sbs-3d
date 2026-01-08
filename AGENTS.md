@@ -30,73 +30,72 @@
 ## CONTINUITY LEDGER (edit this section only; keep headings)
 
 - Goal (incl. success criteria):
-  - 将本地项目更新到 https://github.com/z4djjskk/quest-sbs-3d，并同步到 https://github.com/apple/ml-sharp 的指定分支。
+  - 提交并推送 cl.exe 自动定位修复与 README 常见报错补充。
   - Success criteria:
-    - [ ] 本地改动已提交并推送到 quest-sbs-3d。
-    - [ ] 相关改动已推送到 ml-sharp 的目标分支（或已建立 PR）。
-    - [ ] 用户确认推送结果与分支目标。
+    - [ ] 相关改动已提交。
+    - [ ] 相关改动已推送到 origin/main。
 
 - Constraints/Assumptions:
-  - 具备对两个仓库的 Git 推送权限与认证。
-  - 不使用破坏性命令（如 reset/checkout --）。
   - 不提交未跟踪文件（用户要求）。
 
 - Key decisions:
-  - 先检查现有分支与 remotes，再决定推送策略（直接推送或新建分支）。 — rationale: 避免覆盖错误分支。
-  - 使用 merge 同步远端更新后再推送。 — rationale: 用户未指定，采用不改写历史的方式。
+  - 使用 `vswhere` 自动定位 VS 安装并注入 cl.exe 到 PATH。 — rationale: 兼容 Community/BuildTools。
+  - README 增加 `opencv.cuda: MISSING` 说明。 — rationale: 明确 pip OpenCV CPU-only。
 
 - State:
   - Done:
-    - 已检查 git 状态/分支/远程（main 跟踪 origin/main）。
-    - 已提交本地改动（commit 1ce66ad）。
-    - 推送到 origin/main 被拒绝：远端有新提交需先同步。
+    - 已实现 cl.exe 自动定位（tools/web_server.py, tools/video_to_sbs.py, tools/precompile.py）。
+    - 已更新 README.md 与 README.zh-CN.md（opencv.cuda 说明）。
   - Now:
-    - 执行 git pull (merge) 同步远端并重新 push。
+    - 准备提交并推送改动。
   - Next:
-    - 配置 ml-sharp 远程并推送到指定分支或创建 PR。
+    - 提交改动。
+    - 推送到 origin/main。
 
 - Open questions (UNCONFIRMED if needed):
-  - [UNCONFIRMED] ml-sharp 需要同步到哪个分支？是否需要 PR 方式？
-  - [UNCONFIRMED] 需要使用 fork 向 ml-sharp 提交，还是你有直接推送权限？
+  - [UNCONFIRMED] 提交信息是否有偏好？
 
 - Working set (files/ids/commands):
   - Files:
-    - AGENTS.md
+    - tools/web_server.py
+    - tools/video_to_sbs.py
+    - tools/precompile.py
+    - README.md
+    - README.zh-CN.md
   - Commands:
     - git status -sb
-    - git remote -v
-    - git branch -vv
-    - git log -1 --oneline
+    - git add -u
+    - git commit -m "fix: auto-detect cl.exe with vswhere"
+    - git push origin main
   - Artifacts/Refs:
     - origin: https://github.com/z4djjskk/quest-sbs-3d
-    - target: https://github.com/apple/ml-sharp
----
-
+    - PR: https://github.com/apple/ml-sharp/pull/64
 ## EXECUTION PLAN (PLANS) 〞 multi-hour execution scaffold (edit this section)
 
 ### Goal
-- 将本地项目更新到 quest-sbs-3d 并同步到 ml-sharp 目标分支。
+- 提交并推送 cl.exe 自动定位修复与 README 常见报错补充。
 
 ### Acceptance Criteria
-- [ ] quest-sbs-3d 已包含本地最新提交。
-- [ ] ml-sharp 目标分支已更新或 PR 已创建。
-- [ ] 用户确认分支与推送结果。
+- [ ] 改动已提交。
+- [ ] 改动已推送到 origin/main。
 
 ### Plan (3-7 steps max)
-- [x] 核对 git 状态/分支/远程配置。 — completed
-- [ ] 同步远端并推送到 quest-sbs-3d。 — in_progress
-- [ ] 同步到 ml-sharp 目标分支或创建 PR。 — pending
+- [ ] Stage 相关文件。 — pending
+- [ ] 提交改动。 — pending
+- [ ] 推送到 origin/main。 — pending
 
 ### Verification commands (copy-paste)
-    <none>
+    git status -sb
 
 ### Progress
 - Pending:
-  - 同步到 ml-sharp 目标分支或创建 PR。
+  - Stage 相关文件。
+  - 提交改动。
+  - 推送到 origin/main。
 - In Progress:
-  - 同步远端并推送到 quest-sbs-3d。
+  - <none>
 - Completed:
-  - 核对 git 状态/分支/远程配置。
+  - <none>
 
 ### Risks / Tradeoffs
-- Risk: 审查范围大且近期改动多。  Mitigation: 先覆盖核心路径与异常分支。
+- Risk: 工作区有未跟踪文件。  Mitigation: 使用 `git add -u` 仅提交已跟踪文件。
