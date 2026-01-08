@@ -30,55 +30,49 @@
 ## CONTINUITY LEDGER (edit this section only; keep headings)
 
 - Goal (incl. success criteria):
-  - 提交并推送 cl.exe 自动定位修复与 README 常见报错补充。
+  - 提交并推送 README 中 CUDA 默认版本说明（中英版）。
   - Success criteria:
-    - [x] 相关改动已提交。
-    - [x] 相关改动已推送到 origin/main。
+    - [x] README 改动已提交。
+    - [x] README 改动已推送到 origin/main。
 
 - Constraints/Assumptions:
   - 不提交未跟踪文件（用户要求）。
 
 - Key decisions:
-  - 使用 `vswhere` 自动定位 VS 安装并注入 cl.exe 到 PATH。 — rationale: 兼容 Community/BuildTools。
-  - README 增加 `opencv.cuda: MISSING` 说明。 — rationale: 明确 pip OpenCV CPU-only。
+  - 仅提交 README.md 与 README.zh-CN.md。 — rationale: 用户只要求文档说明。
 
 - State:
   - Done:
-    - 已实现 cl.exe 自动定位（tools/web_server.py, tools/video_to_sbs.py, tools/precompile.py）。
-    - 已更新 README.md 与 README.zh-CN.md（opencv.cuda 说明）。
-    - 已提交并推送修复（commit fdf5d79）。
+    - 已更新并推送 README.md 与 README.zh-CN.md（commit 5156e0e）。
   - Now:
-    - 等待用户验证。
+    - 回复用户并提供提交信息。
   - Next:
-    - 如有反馈，继续调整。
+    - 等待用户反馈。
 
 - Open questions (UNCONFIRMED if needed):
-  - [UNCONFIRMED] 用户更新后 `where cl` 是否仍失败？
+  - [UNCONFIRMED] 用户是否需要进一步的安装指南更新？
 
 - Working set (files/ids/commands):
   - Files:
-    - tools/web_server.py
-    - tools/video_to_sbs.py
-    - tools/precompile.py
     - README.md
     - README.zh-CN.md
   - Commands:
     - git push origin main
   - Artifacts/Refs:
     - origin: https://github.com/z4djjskk/quest-sbs-3d
-    - commit: fdf5d79
+    - commit: 5156e0e
     - PR: https://github.com/apple/ml-sharp/pull/64
 ## EXECUTION PLAN (PLANS) 〞 multi-hour execution scaffold (edit this section)
 
 ### Goal
-- 提交并推送 cl.exe 自动定位修复与 README 常见报错补充。
+- 提交并推送 README 中 CUDA 默认版本说明（中英版）。
 
 ### Acceptance Criteria
-- [x] 改动已提交。
-- [x] 改动已推送到 origin/main。
+- [x] README 改动已提交。
+- [x] README 改动已推送到 origin/main。
 
 ### Plan (3-7 steps max)
-- [x] Stage 相关文件。 — completed
+- [x] Stage README 改动。 — completed
 - [x] 提交改动。 — completed
 - [x] 推送到 origin/main。 — completed
 
@@ -91,9 +85,9 @@
 - In Progress:
   - <none>
 - Completed:
-  - Stage 相关文件。
+  - Stage README 改动。
   - 提交改动。
   - 推送到 origin/main。
 
 ### Risks / Tradeoffs
-- Risk: 工作区有未跟踪文件。  Mitigation: 使用 `git add -u` 仅提交已跟踪文件。
+- Risk: 工作区存在未跟踪文件。  Mitigation: 仅 add README 文件。
