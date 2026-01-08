@@ -73,7 +73,9 @@ Open `http://127.0.0.1:7860`, upload a video to local cache, and click "Download
 ## Common errors
 
 - CUDA not available: install CUDA-enabled PyTorch, check with `python tools/env_check.py`.
-- `where cl` fails (MSVC not found): open "x64 Native Tools Command Prompt for VS 2022", then activate the venv and retry; ensure "Desktop development with C++" and MSVC v143 are installed.
+- CUDA version assumption: scripts default to CUDA v13.0 and `TORCH_CUDA_ARCH_LIST=12.0`; set `CUDA_PATH`/`CUDA_HOME`/`CUDA_ROOT` to your install if different.
+- `where cl` fails (MSVC not found): open "x64 Native Tools Command Prompt for VS 2022", then activate the venv and retry; ensure "Desktop development with C++", MSVC v143, and Windows SDK are installed.
+- VS installed but still missing `cl.exe`: run `C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`, then call `"<install>\\Common7\\Tools\\VsDevCmd.bat" -arch=x64` or `"<install>\\VC\\Auxiliary\\Build\\vcvars64.bat"` and retry `where cl`.
 - `ffmpeg` not in PATH: install ffmpeg and set environment variables.
 - `opencv.cuda: MISSING`: pip OpenCV is CPU-only; use `--track_backend cpu` or install a CUDA-enabled OpenCV build and set `OPENCV_BIN`.
 - SHARP model download fails: set a proxy or pass `--sharp_ckpt` with a local checkpoint.

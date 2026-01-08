@@ -75,7 +75,9 @@ python tools/web_server.py
 ## 常见报错
 
 - CUDA 不可用：确保装了 CUDA 版 PyTorch，`python tools/env_check.py` 查看状态。
-- `where cl`/`cl.exe` 找不到：请用 "x64 Native Tools Command Prompt for VS 2022" 打开，再激活 venv 运行；确认已安装 "Desktop development with C++" 和 MSVC v143 组件。
+- CUDA 版本默认假设：脚本默认 CUDA v13.0 且 `TORCH_CUDA_ARCH_LIST=12.0`；若不同，请设置 `CUDA_PATH`/`CUDA_HOME`/`CUDA_ROOT` 指向你的安装目录。
+- `where cl`/`cl.exe` 找不到：请用 "x64 Native Tools Command Prompt for VS 2022" 打开，再激活 venv 运行；确认已安装 "Desktop development with C++"、MSVC v143 和 Windows SDK。
+- 已安装 VS 但仍找不到：先运行 `C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath` 获取安装路径，再执行 `"<install>\\Common7\\Tools\\VsDevCmd.bat" -arch=x64` 或 `"<install>\\VC\\Auxiliary\\Build\\vcvars64.bat"` 后重试 `where cl`。
 - `ffmpeg` 不在 PATH：安装 ffmpeg 并配置环境变量。
 - `opencv.cuda: MISSING`：pip 安装的 OpenCV 仅 CPU 版；可用 `--track_backend cpu`，或自编译 CUDA 版并设置 `OPENCV_BIN`。
 - SHARP 模型下载失败：设置代理或手动下载后用 `--sharp_ckpt` 指定。
