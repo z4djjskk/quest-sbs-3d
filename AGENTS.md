@@ -30,49 +30,47 @@
 ## CONTINUITY LEDGER (edit this section only; keep headings)
 
 - Goal (incl. success criteria):
-  - 提交并推送 README 中的错误反馈模板（中英版）。
+  - 提交并推送 issue 模板（含 AI 提示词）。
   - Success criteria:
-    - [x] README 改动已提交。
-    - [x] README 改动已推送到 origin/main。
+    - [x] issue 模板已提交。
+    - [x] issue 模板已推送到 origin/main。
 
 - Constraints/Assumptions:
   - 不提交未跟踪文件（用户要求）。
 
 - Key decisions:
-  - 仅提交 README.md 与 README.zh-CN.md。 — rationale: 用户仅要求文档模板。
+  - 仅提交 `.github/ISSUE_TEMPLATE/bug_report.md`。 — rationale: 用户仅要求模板。
 
 - State:
   - Done:
-    - 已提交并推送反馈模板（commit ffef9d8）。
+    - 已提交并推送模板（commit 604d2cc）。
   - Now:
     - 回复用户并给出提交信息。
   - Next:
     - 等待用户反馈。
 
 - Open questions (UNCONFIRMED if needed):
-  - [UNCONFIRMED] 是否需要将模板扩展到 issue 模板文件？
+  - [UNCONFIRMED] 是否需要添加 `config.yml` 禁止空白 issue？
 
 - Working set (files/ids/commands):
   - Files:
-    - README.md
-    - README.zh-CN.md
+    - .github/ISSUE_TEMPLATE/bug_report.md
   - Commands:
     - git push origin main
   - Artifacts/Refs:
     - origin: https://github.com/z4djjskk/quest-sbs-3d
-    - commit: ffef9d8
-    - PR: https://github.com/apple/ml-sharp/pull/64
+    - commit: 604d2cc
 ## EXECUTION PLAN (PLANS) 〞 multi-hour execution scaffold (edit this section)
 
 ### Goal
-- 提交并推送 README 中的错误反馈模板（中英版）。
+- 提交并推送 issue 模板（含 AI 提示词）。
 
 ### Acceptance Criteria
-- [x] README 改动已提交。
-- [x] README 改动已推送到 origin/main。
+- [x] issue 模板已提交。
+- [x] issue 模板已推送到 origin/main。
 
 ### Plan (3-7 steps max)
-- [x] Stage README 改动。 — completed
+- [x] Stage 模板文件。 — completed
 - [x] 提交改动。 — completed
 - [x] 推送到 origin/main。 — completed
 
@@ -85,9 +83,9 @@
 - In Progress:
   - <none>
 - Completed:
-  - Stage README 改动。
+  - Stage 模板文件。
   - 提交改动。
   - 推送到 origin/main。
 
 ### Risks / Tradeoffs
-- Risk: 工作区存在未跟踪文件。  Mitigation: 仅 add README 文件。
+- Risk: 工作区存在未跟踪文件。  Mitigation: 只 add 模板文件。
