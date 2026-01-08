@@ -30,68 +30,73 @@
 ## CONTINUITY LEDGER (edit this section only; keep headings)
 
 - Goal (incl. success criteria):
-  - 上传到 GitHub，并写一份十分详细的使用说明。
+  - 将本地项目更新到 https://github.com/z4djjskk/quest-sbs-3d，并同步到 https://github.com/apple/ml-sharp 的指定分支。
   - Success criteria:
-    - [x] 生成详细使用说明 Markdown（中文）。
-    - [x] 文档已推送到 GitHub（USAGE.zh-CN.md + README.zh-CN.md + agent.md）。
-    - [ ] 完整代码同步到 GitHub。
+    - [ ] 本地改动已提交并推送到 quest-sbs-3d。
+    - [ ] 相关改动已推送到 ml-sharp 的目标分支（或已建立 PR）。
+    - [ ] 用户确认推送结果与分支目标。
 
 - Constraints/Assumptions:
-  - 本地 Git 无法写入 `.git`；代码将通过 GitHub API 推送。
+  - 具备对两个仓库的 Git 推送权限与认证。
+  - 不使用破坏性命令（如 reset/checkout --）。
+  - 默认将当前工作区改动全部纳入提交（除非用户指定排除文件）。
 
 - Key decisions:
-  - 代码同步走 GitHub API（覆盖式更新 main）。
+  - 先检查现有分支与 remotes，再决定推送策略（直接推送或新建分支）。 — rationale: 避免覆盖错误分支。
 
 - State:
   - Done:
-    - 已完成提交与推送（main 已与 origin/main 同步）。
-    - 已生成并推送文档更新。
-    - 已设置用户级 `GITHUB_TOKEN`。
+    - 已检查 git 状态/分支/远程（main 跟踪 origin/main）。
   - Now:
-    - 推送完整代码到 GitHub。
+    - 确认提交范围（是否包含未跟踪文件）与 ml-sharp 目标分支。
   - Next:
-    - 核验远端内容与提交。
+    - 整理提交并推送到 quest-sbs-3d。
+    - 配置 ml-sharp 远程并推送到指定分支或创建 PR。
 
 - Open questions (UNCONFIRMED if needed):
-  - <none>
+  - [UNCONFIRMED] ml-sharp 需要同步到哪个分支？是否需要 PR 方式？
+  - [UNCONFIRMED] 未跟踪文件（AGENT_COORDINATION.md、codex_last_message.txt、push_payload.json）是否需要提交？
 
 - Working set (files/ids/commands):
   - Files:
-    - push_payload.json
+    - AGENTS.md
   - Commands:
-    - <none>
+    - git status -sb
+    - git remote -v
+    - git branch -vv
+    - git log -1 --oneline
   - Artifacts/Refs:
     - origin: https://github.com/z4djjskk/quest-sbs-3d
-
+    - target: https://github.com/apple/ml-sharp
 ---
 
 ## EXECUTION PLAN (PLANS) 〞 multi-hour execution scaffold (edit this section)
 
 ### Goal
-- 提交并推送当前代码到 GitHub。
+- 将本地项目更新到 quest-sbs-3d 并同步到 ml-sharp 目标分支。
 
 ### Acceptance Criteria
-- [ ] 清理阻塞的 git lock。
-- [ ] 完成 git add/commit。
-- [ ] 推送到远端仓库成功。
+- [ ] quest-sbs-3d 已包含本地最新提交。
+- [ ] ml-sharp 目标分支已更新或 PR 已创建。
+- [ ] 用户确认分支与推送结果。
 
 ### Plan (3-7 steps max)
-- [x] 清理 .git/index.lock 并重试 git add。 — completed
-- [x] 提交 AGENTS.md。 — completed
-- [x] 推送到远端仓库。 — completed
+- [ ] 核对 git 状态/分支/远程配置。 — pending
+- [ ] 整理提交并推送到 quest-sbs-3d。 — pending
+- [ ] 同步到 ml-sharp 目标分支或创建 PR。 — pending
 
 ### Verification commands (copy-paste)
     <none>
 
 ### Progress
 - Pending:
-  - <none>
+  - 核对 git 状态/分支/远程配置。
+  - 整理提交并推送到 quest-sbs-3d。
+  - 同步到 ml-sharp 目标分支或创建 PR。
 - In Progress:
   - <none>
 - Completed:
-  - 清理 .git/index.lock 并重试 git add。
-  - 提交 AGENTS.md。
-  - 推送到远端仓库。
+  - <none>
 
 ### Risks / Tradeoffs
-- Risk: 锁文件删除不当。  Mitigation: 确认无 git 进程后再删除。
+- Risk: 审查范围大且近期改动多。  Mitigation: 先覆盖核心路径与异常分支。

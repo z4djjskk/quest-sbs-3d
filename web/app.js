@@ -15,7 +15,7 @@ const defaults = {
   mode: "video",
   batchMode: false,
   segmentFrames: 2000,
-  crf: 0,
+  crf: 10,
   preset: "slow",
   inpaint: 0,
   copyAudio: true,
@@ -25,7 +25,7 @@ const defaults = {
   device: "cuda",
   ioBackend: "ffmpeg",
   decode: "nvdec",
-  encode: "x264",
+  encode: "hevc_nvenc",
   trackBackend: "opencv_cuda",
   renderBackend: "cuda",
   twoPass: false,
@@ -112,25 +112,77 @@ const dropSub = document.getElementById("dropSub");
 const thumbGrid = document.getElementById("thumbGrid");
 const batchPicker = document.getElementById("batchPicker");
 const modeTabs = Array.from(document.querySelectorAll(".mode-tab"));
+const batchRememberOut = document.getElementById("batchRememberOut");
 
 let stream = null;
+let streamRetryTimer = null;
 let backendOk = false;
 let isRunning = false;
 let lastOutputName = "";
 let currentJob = "";
+const BATCH_REMEMBER_KEY = "sbs_batch_out_remember";
+const BATCH_OUT_DIR_KEY = "sbs_batch_out_dir";
 const runningStates = new Set(["运行中", "预编译中"]);
 let frameProgress = { percent: -1, frame: 0, total: 0 };
 let batchProgress = { index: 0, total: 0 };
 let activeMode = defaults.batchMode ? "batch" : defaults.mode;
 let batchKind = "video";
 let thumbItems = [];
+let batchOrder = [];
+let batchCurrentKey = "";
+let batchDoneKeys = new Set();
 const videoExts = new Set([".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"]);
 const imageExts = new Set([".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"]);
+
+function scheduleStreamReconnect() {
+  if (streamRetryTimer) return;
+  streamRetryTimer = window.setTimeout(() => {
+    streamRetryTimer = null;
+    pingBackend();
+  }, 1000);
+}
 
 function updateComfortLabel(maxDisp) {
   if (maxDisp <= 28) return "舒适";
   if (maxDisp <= 35) return "偏强";
   return "强烈";
+}
+
+function getStoredBatchRemember() {
+  return localStorage.getItem(BATCH_REMEMBER_KEY) === "1";
+}
+
+function getStoredBatchOutDir() {
+  const stored = localStorage.getItem(BATCH_OUT_DIR_KEY);
+  return stored ? stored.trim() : "";
+}
+
+function clearBatchRememberStorage() {
+  localStorage.removeItem(BATCH_REMEMBER_KEY);
+  localStorage.removeItem(BATCH_OUT_DIR_KEY);
+}
+
+function applyBatchRememberState(isBatch) {
+  if (!batchRememberOut || !els.outPath) return;
+  const rememberOn = getStoredBatchRemember();
+  batchRememberOut.checked = rememberOn;
+  if (!isBatch || els.outPath.value.trim() || !rememberOn) return;
+  const storedDir = getStoredBatchOutDir();
+  if (storedDir) {
+    els.outPath.value = storedDir;
+  }
+}
+
+function syncBatchRememberStorage() {
+  if (activeMode !== "batch") return;
+  if (!batchRememberOut || !els.outPath) return;
+  const outValue = els.outPath.value.trim();
+  if (batchRememberOut.checked && outValue) {
+    localStorage.setItem(BATCH_REMEMBER_KEY, "1");
+    localStorage.setItem(BATCH_OUT_DIR_KEY, outValue);
+  } else {
+    clearBatchRememberStorage();
+  }
 }
 
 function setMode(mode) {
@@ -155,12 +207,20 @@ function setMode(mode) {
   modeTabs.forEach((tab) => {
     tab.classList.toggle("active", tab.dataset.mode === mode);
   });
+  applyBatchRememberState(isBatch);
   updateUI();
 }
 
 function getExt(name) {
   const idx = name.lastIndexOf(".");
   return idx >= 0 ? name.slice(idx).toLowerCase() : "";
+}
+
+function getBasename(path) {
+  if (!path) return "";
+  const normalized = String(path).replace(/\\/g, "/");
+  const parts = normalized.split("/");
+  return parts[parts.length - 1] || "";
 }
 
 function isVideoFile(file) {
@@ -173,10 +233,13 @@ function isImageFile(file) {
 
 function clearThumbs() {
   thumbItems = [];
+  batchOrder = [];
+  batchCurrentKey = "";
+  batchDoneKeys = new Set();
   if (thumbGrid) thumbGrid.textContent = "";
 }
 
-function createThumbItem({ name, kind, url, placeholder = false }) {
+function createThumbItem({ name, kind, url, placeholder = false, key = "" }) {
   if (!thumbGrid) return null;
   const card = document.createElement("div");
   card.className = "thumb-item";
@@ -222,7 +285,7 @@ function createThumbItem({ name, kind, url, placeholder = false }) {
   card.appendChild(bar);
   thumbGrid.appendChild(card);
 
-  return { name, kind, status, barFill };
+  return { name, key: key || name, kind, status, barFill };
 }
 
 function setThumbStatus(item, label, percent) {
@@ -241,21 +304,52 @@ function renderThumbItems(items) {
   });
 }
 
-function ensureBatchPlaceholders(total) {
+function ensureBatchPlaceholders(total, kind = "video") {
   if (!total || thumbItems.length) return;
   const placeholders = Array.from({ length: total }, (_, idx) => ({
     name: `视频 ${idx + 1}`,
-    kind: "video",
+    key: `视频 ${idx + 1}`,
+    kind,
     url: "",
     placeholder: true,
   }));
   renderThumbItems(placeholders);
+  batchOrder = placeholders.map((item) => item.key);
+}
+
+function seedBatchOrder(names, kind = "video") {
+  if (!Array.isArray(names) || !names.length) return;
+  batchOrder = names.slice();
+  if (!thumbItems.length) {
+    const placeholders = names.map((name) => ({
+      name,
+      key: name,
+      kind,
+      url: "",
+      placeholder: true,
+    }));
+    renderThumbItems(placeholders);
+  }
 }
 
 function applyBatchStatuses() {
   if (!thumbItems.length) return;
   const current = batchProgress.index || 0;
   const total = batchProgress.total || 0;
+  if (batchCurrentKey || batchDoneKeys.size) {
+    thumbItems.forEach((item) => {
+      const key = item.key || item.name;
+      if (batchDoneKeys.has(key)) {
+        setThumbStatus(item, "完成", 100);
+      } else if (key === batchCurrentKey) {
+        const percent = frameProgress.percent >= 0 ? frameProgress.percent : 0;
+        setThumbStatus(item, "处理中", percent);
+      } else {
+        setThumbStatus(item, "等待", 0);
+      }
+    });
+    return;
+  }
   thumbItems.forEach((item, idx) => {
     if (total && idx < current - 1) {
       setThumbStatus(item, "完成", 100);
@@ -270,6 +364,8 @@ function applyBatchStatuses() {
 
 function markAllDone() {
   if (!thumbItems.length) return;
+  batchDoneKeys = new Set(thumbItems.map((item) => item.key || item.name));
+  batchCurrentKey = "";
   thumbItems.forEach((item) => setThumbStatus(item, "完成", 100));
 }
 
@@ -376,17 +472,28 @@ function setProgress(percent, frame, total) {
   applyBatchStatuses();
 }
 
-function setBatchProgress(index, total) {
+function setBatchProgress(index, total, item) {
   const nextIndex = index || 0;
   if (batchProgress.index && nextIndex !== batchProgress.index) {
     frameProgress = { percent: -1, frame: 0, total: 0 };
+  }
+  if (item) {
+    if (batchCurrentKey && batchCurrentKey !== item) {
+      batchDoneKeys.add(batchCurrentKey);
+    }
+    batchCurrentKey = item;
   }
   batchProgress = {
     index: nextIndex,
     total: total || 0,
   };
+  if (!item && batchOrder.length && nextIndex && batchDoneKeys.size === 0 && !batchCurrentKey) {
+    batchDoneKeys = new Set(batchOrder.slice(0, Math.max(0, nextIndex - 1)));
+    batchCurrentKey = batchOrder[nextIndex - 1] || "";
+  }
   if (batchProgress.total) {
-    ensureBatchPlaceholders(batchProgress.total);
+    const kind = batchKind === "image" ? "image" : "video";
+    ensureBatchPlaceholders(batchProgress.total, kind);
   }
   updateProgressInfo();
   applyBatchStatuses();
@@ -395,6 +502,9 @@ function setBatchProgress(index, total) {
 function resetProgress() {
   frameProgress = { percent: -1, frame: 0, total: 0 };
   batchProgress = { index: 0, total: 0 };
+  batchOrder = [];
+  batchCurrentKey = "";
+  batchDoneKeys = new Set();
   updateProgressInfo();
   applyBatchStatuses();
 }
@@ -486,8 +596,12 @@ function updateUI() {
 
 function buildBatchPreviewItems(files, serverItems, kind) {
   const ordered = serverItems.length
-    ? serverItems
-    : files.map((file) => ({ name: file.name }));
+    ? [...serverItems].sort((a, b) => {
+        const left = a.filename || a.name || "";
+        const right = b.filename || b.name || "";
+        return left.localeCompare(right);
+      })
+    : files.map((file) => ({ name: file.name, filename: file.name }));
   const map = new Map();
   files.forEach((file) => {
     const list = map.get(file.name) || [];
@@ -498,16 +612,19 @@ function buildBatchPreviewItems(files, serverItems, kind) {
   return ordered.map((item) => {
     const list = map.get(item.name) || [];
     const file = list.shift();
+    const key = item.filename || item.name || "";
     if (file) {
       return {
-        name: item.name,
+        name: item.name || item.filename,
+        key,
         kind: mediaKind,
         url: URL.createObjectURL(file),
         placeholder: false,
       };
     }
     return {
-      name: item.name,
+      name: item.name || item.filename,
+      key,
       kind: mediaKind,
       url: "",
       placeholder: true,
@@ -612,6 +729,9 @@ async function handleBatchFiles(files) {
     const serverItems = Array.isArray(data.items) ? data.items : [];
     const previewItems = buildBatchPreviewItems(batchFiles, serverItems, kind);
     renderThumbItems(previewItems);
+    batchOrder = previewItems.map((item) => item.key || item.name);
+    batchCurrentKey = "";
+    batchDoneKeys = new Set();
     els.videoPath.value = data.path || "";
     setBatchProgress(0, previewItems.length);
     if (videoHint) {
@@ -635,8 +755,25 @@ function handleFiles(files) {
   }
 }
 
+async function refreshLastOutput() {
+  try {
+    const res = await fetch("/api/status");
+    const data = await res.json();
+    if (data && data.last_output) {
+      lastOutputName = getBasename(data.last_output);
+      updateUI();
+    }
+  } catch (err) {
+    // ignore
+  }
+}
+
 function startStreamListener() {
   if (stream) stream.close();
+  if (streamRetryTimer) {
+    window.clearTimeout(streamRetryTimer);
+    streamRetryTimer = null;
+  }
   stream = new EventSource("/api/stream");
   stream.onmessage = (event) => {
     const msg = JSON.parse(event.data);
@@ -644,7 +781,7 @@ function startStreamListener() {
       appendLog(msg.line);
     }
     if (msg.type === "batch") {
-      setBatchProgress(msg.index, msg.total);
+      setBatchProgress(msg.index, msg.total, msg.item);
     }
     if (msg.type === "progress") {
       setProgress(msg.percent, msg.frame, msg.total);
@@ -655,6 +792,9 @@ function startStreamListener() {
         isRunning = false;
         if (msg.state === "完成" && currentJob === "run") {
           lastOutputName = els.outPath.value.trim();
+          if (!lastOutputName) {
+            refreshLastOutput();
+          }
         }
         if (msg.state === "完成") {
           markAllDone();
@@ -668,13 +808,16 @@ function startStreamListener() {
     }
   };
   stream.onerror = () => {
+    if (stream) stream.close();
+    if (!isRunning && !currentJob) {
+      setStatus("空闲");
+      if (runBtn) runBtn.disabled = false;
+      if (stopBtn) stopBtn.disabled = true;
+      updateUI();
+      return;
+    }
     setStatus("连接中断");
-    isRunning = false;
-    currentJob = "";
-    if (runBtn) runBtn.disabled = false;
-    if (stopBtn) stopBtn.disabled = true;
-    stream.close();
-    updateUI();
+    scheduleStreamReconnect();
   };
 }
 
@@ -784,6 +927,9 @@ function applyStatusSnapshot(data) {
   if (data.running) {
     if (data.batch_total && data.batch_total > 0) {
       setMode("batch");
+      if (data.mode) {
+        batchKind = data.mode === "image" ? "image" : "video";
+      }
     }
     setStatus(data.status || "运行中");
     isRunning = true;
@@ -792,8 +938,16 @@ function applyStatusSnapshot(data) {
     if (stopBtn) stopBtn.disabled = false;
     if (precompileBtn) precompileBtn.disabled = true;
     setProgress(data.percent ?? -1, data.frame || 0, data.total || 0);
+    if (Array.isArray(data.batch_items) && data.batch_items.length) {
+      seedBatchOrder(data.batch_items, batchKind === "image" ? "image" : "video");
+      if (data.batch_index) {
+        const currentIdx = Math.max(0, data.batch_index - 1);
+        batchDoneKeys = new Set(data.batch_items.slice(0, currentIdx));
+        batchCurrentKey = data.batch_items[currentIdx] || "";
+      }
+    }
     if (data.batch_total) {
-      setBatchProgress(data.batch_index || 0, data.batch_total || 0);
+      setBatchProgress(data.batch_index || 0, data.batch_total || 0, data.batch_current || batchCurrentKey);
     } else {
       setBatchProgress(0, 0);
     }
@@ -803,6 +957,11 @@ function applyStatusSnapshot(data) {
   } else {
     isRunning = false;
     currentJob = "";
+    if (data.last_output) {
+      lastOutputName = getBasename(data.last_output);
+    } else {
+      lastOutputName = "";
+    }
     setStatus("空闲");
     updateUI();
   }
@@ -931,6 +1090,15 @@ ids.forEach((id) => {
   els[id].addEventListener("change", updateUI);
 });
 
+if (els.outPath) {
+  els.outPath.addEventListener("input", syncBatchRememberStorage);
+  els.outPath.addEventListener("change", syncBatchRememberStorage);
+}
+
+if (batchRememberOut) {
+  batchRememberOut.addEventListener("change", syncBatchRememberStorage);
+}
+
 modeTabs.forEach((tab) => {
   tab.addEventListener("click", () => {
     setMode(tab.dataset.mode || "video");
@@ -954,6 +1122,7 @@ resetBtn.addEventListener("click", () => {
   els.maxFrames.value = "";
   lastOutputName = "";
   updateUI();
+  syncBatchRememberStorage();
 });
 
 if (runBtn) runBtn.addEventListener("click", () => startRun().catch(() => {}));

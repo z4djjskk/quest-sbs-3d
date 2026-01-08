@@ -1,5 +1,6 @@
 import json
 import os
+import hashlib
 import logging
 import queue
 import re
@@ -81,7 +82,17 @@ def safe_filename(name: str) -> str:
         else:
             keep.append("_")
     cleaned = "".join(keep).strip("._")
-    return cleaned or f"upload_{int(time.time())}.mp4"
+    ext = Path(name).suffix
+    if not cleaned:
+        digest = hashlib.md5(name.encode("utf-8")).hexdigest()[:8]
+        return f"upload_{digest}{ext}"
+    if cleaned != name:
+        digest = hashlib.md5(name.encode("utf-8")).hexdigest()[:8]
+        base, cleaned_ext = os.path.splitext(cleaned)
+        if not cleaned_ext and ext:
+            cleaned_ext = ext
+        return f"{base}_{digest}{cleaned_ext}"
+    return cleaned
 
 app = Flask(__name__, static_folder=str(WEB_DIR), static_url_path="")
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
@@ -111,6 +122,17 @@ def _count_batch_inputs(input_path: Path, mode: str | None) -> int:
         for path in sorted(input_path.iterdir())
         if path.is_file() and path.suffix.lower() in exts
     )
+
+
+def _list_batch_inputs(input_path: Path, mode: str | None) -> list[str]:
+    if not input_path.is_dir():
+        return [input_path.name]
+    exts = IMAGE_EXTS if mode == "image" else VIDEO_EXTS
+    return [
+        path.name
+        for path in sorted(input_path.iterdir())
+        if path.is_file() and path.suffix.lower() in exts
+    ]
 
 
 def _probe_total_frames(video_path: Path, target_fps: float | None = None) -> int:
@@ -178,6 +200,9 @@ class Runner:
         self.batch_index = 0
         self.batch_total = 0
         self.batch_mode = False
+        self.batch_items = []
+        self.batch_current = ""
+        self.batch_root = None
         self.io_backend = None
         self.target_fps = 0.0
         self.mode = "video"
@@ -208,8 +233,12 @@ class Runner:
                 )
             if is_batch:
                 self.batch_total = _count_batch_inputs(video_path, mode)
+                self.batch_items = _list_batch_inputs(video_path, mode)
+                self.batch_root = video_path if video_path.is_dir() else None
             else:
                 self.batch_total = 0
+                self.batch_items = []
+                self.batch_root = None
             self.current_frame = 0
             self.queue = queue.Queue(maxsize=QUEUE_MAX)
             self.running = True
@@ -226,6 +255,7 @@ class Runner:
             self.mode = mode
 
             self.batch_index = 0
+            self.batch_current = ""
 
             if is_batch:
                 output_path = self._resolve_batch_output(out, video_path)
@@ -282,6 +312,9 @@ class Runner:
             self.batch_mode = False
             self.batch_index = 0
             self.batch_total = 0
+            self.batch_items = []
+            self.batch_current = ""
+            self.batch_root = None
 
             cmd = self._build_precompile_command(payload)
             env = os.environ.copy()
@@ -310,7 +343,26 @@ class Runner:
             if not self.running or self.proc is None:
                 return {"ok": False, "error": "没有正在运行的任务"}
             self.stop_requested = True
-            self.proc.terminate()
+            pid = self.proc.pid
+            try:
+                self.proc.terminate()
+            except Exception:
+                pass
+            if os.name == "nt":
+                try:
+                    subprocess.run(
+                        ["taskkill", "/PID", str(pid), "/T", "/F"],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                except Exception:
+                    pass
+            else:
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
             self.status = "停止中"
             return {"ok": True}
 
@@ -328,6 +380,10 @@ class Runner:
                 "percent": self._progress_percent(),
                 "batch_index": self.batch_index,
                 "batch_total": self.batch_total,
+                "batch_items": list(self.batch_items) if self.batch_mode else [],
+                "batch_current": self.batch_current,
+                "batch_mode": self.batch_mode,
+                "mode": self.mode,
                 "last_output": self.last_output_path,
             }
 
@@ -353,22 +409,22 @@ class Runner:
         assert self.proc is not None
         frame_re = re.compile(r"frame=(\d+)")
         batch_re = re.compile(r"\[(\d+)/(\d+)\]")
+        batch_item_re = re.compile(r"BATCH_ITEM\s+(\d+)/(\d+)\s+(.+)$")
         for line in self.proc.stdout:
             line = line.rstrip()
             self._enqueue({"type": "log", "line": line})
             self.last_output_time = time.time()
-            batch_match = batch_re.search(line)
-            if batch_match:
-                self.batch_index = int(batch_match.group(1))
-                self.batch_total = int(batch_match.group(2))
-                remainder = line[batch_match.end():].strip()
-                input_path = remainder
-                if "->" in remainder:
-                    input_path = remainder.split("->", 1)[0].strip()
-                if self.mode != "image" and input_path:
-                    try:
-                        path = Path(input_path)
-                        if path.exists():
+            item_match = batch_item_re.search(line)
+            if item_match:
+                self.batch_index = int(item_match.group(1))
+                self.batch_total = int(item_match.group(2))
+                item_name = item_match.group(3).strip()
+                if item_name:
+                    self.batch_current = item_name
+                if self.mode != "image" and self.batch_root is not None and item_name:
+                    path = self.batch_root / item_name
+                    if path.exists():
+                        try:
                             self.total_frames = self._get_total_frames(path, self.io_backend, self.target_fps)
                             self.current_frame = 0
                             percent = self._progress_percent()
@@ -380,10 +436,47 @@ class Runner:
                                     "percent": percent,
                                 }
                             )
+                        except Exception:
+                            pass
+                self._enqueue(
+                    {"type": "batch", "index": self.batch_index, "total": self.batch_total, "item": self.batch_current}
+                )
+                continue
+            batch_match = batch_re.search(line)
+            if batch_match:
+                self.batch_index = int(batch_match.group(1))
+                self.batch_total = int(batch_match.group(2))
+                remainder = line[batch_match.end():].strip()
+                input_path = remainder
+                if "->" in remainder:
+                    input_path = remainder.split("->", 1)[0].strip()
+                item_name = ""
+                path = None
+                if input_path:
+                    try:
+                        path = Path(input_path)
+                        item_name = path.name
+                    except Exception:
+                        path = None
+                if item_name:
+                    self.batch_current = item_name
+                if self.mode != "image" and path is not None and path.exists():
+                    try:
+                        self.total_frames = self._get_total_frames(path, self.io_backend, self.target_fps)
+                        self.current_frame = 0
+                        percent = self._progress_percent()
+                        self._enqueue(
+                            {
+                                "type": "progress",
+                                "frame": self.current_frame,
+                                "total": self.total_frames,
+                                "percent": percent,
+                            }
+                        )
                     except Exception:
                         pass
                 self._enqueue(
-                    {"type": "batch", "index": self.batch_index, "total": self.batch_total}
+                    {"type": "batch", "index": self.batch_index, "total": self.batch_total, "item": self.batch_current}
                 )
             match = frame_re.search(line)
             if match:
@@ -549,7 +642,10 @@ class Runner:
         out_path = Path(out_value)
         if out_path.exists() and out_path.is_dir():
             return str(out_path / f"{safe_filename(input_path.stem)}_sbs{ext}")
-        if not out_path.suffix:
+        if out_path.suffix:
+            if mode == "image" and out_path.suffix.lower() not in IMAGE_EXTS:
+                out_path = out_path.with_suffix(".png")
+        else:
             out_path = out_path.with_suffix(ext)
         if out_path.is_absolute() or ":" in out_value or out_value.startswith("\\\\"):
             return str(out_path)

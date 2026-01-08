@@ -84,7 +84,15 @@ def write_text(path: Path, text: str) -> None:
 
 
 def safe_filename(name: str) -> str:
-    return "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
+    cleaned = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
+    cleaned = cleaned.strip("._")
+    if not cleaned:
+        digest = hashlib.md5(name.encode("utf-8")).hexdigest()[:8]
+        return f"file_{digest}"
+    if cleaned != name:
+        digest = hashlib.md5(name.encode("utf-8")).hexdigest()[:8]
+        return f"{cleaned}_{digest}"
+    return cleaned
 
 
 def video_cache_key(video_path: Path) -> str:

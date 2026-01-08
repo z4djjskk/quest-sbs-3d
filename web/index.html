@@ -80,6 +80,10 @@
           <div class="batch-title">批处理提示</div>
           <p>支持拖拽多个视频或填写目录路径。</p>
           <p id="batchExample">示例：clip.mp4 → clip_sbs.mp4</p>
+          <label class="checkbox-row">
+            <input type="checkbox" id="batchRememberOut" />
+            记住此文件夹
+          </label>
         </div>
         <label>
           调试目录（可选）
@@ -159,7 +163,7 @@
         <h2>编码与渲染</h2>
         <label>
           ffmpeg CRF
-          <input type="number" id="crf" step="1" value="0" />
+          <input type="number" id="crf" step="1" value="10" />
         </label>
         <label>
           ffmpeg preset
@@ -221,9 +225,9 @@
         <label>
           编码器
           <select id="encode">
-            <option value="x264" selected>x264</option>
+            <option value="x264">x264</option>
             <option value="nvenc">nvenc</option>
-            <option value="hevc_nvenc">hevc_nvenc (4K+)</option>
+            <option value="hevc_nvenc" selected>hevc_nvenc (4K+)</option>
           </select>
         </label>
         <label>

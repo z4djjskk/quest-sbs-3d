@@ -1,5 +1,6 @@
 import argparse
 import copy
+import gc
 import json
 import logging
 import os
@@ -188,7 +189,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--depth_q_low", type=float, default=0.02, help="Depth quantile low")
     parser.add_argument("--depth_q_high", type=float, default=0.98, help="Depth quantile high")
 
-    parser.add_argument("--ffmpeg_crf", type=int, default=0, help="FFmpeg CRF")
+    parser.add_argument("--ffmpeg_crf", type=int, default=10, help="FFmpeg CRF")
     parser.add_argument("--ffmpeg_preset", default="slow", help="FFmpeg preset")
 
     parser.add_argument("--inpaint_radius", type=int, default=2, help="Inpaint radius for holes")
@@ -416,6 +417,139 @@ def _available_memory_bytes() -> int | None:
         return None
 
 
+
+def _total_memory_bytes() -> int | None:
+    try:
+        import psutil  # type: ignore
+
+        return int(psutil.virtual_memory().total)
+    except Exception:
+        pass
+    try:
+        import ctypes
+
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        stat = MEMORYSTATUSEX()
+        stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)) == 0:
+            return None
+        return int(stat.ullTotalPhys)
+    except Exception:
+        return None
+
+
+def _low_mem_threshold_bytes(min_free_ram_gb: float | None) -> int | None:
+    if min_free_ram_gb is not None and min_free_ram_gb > 0:
+        return int(min_free_ram_gb * (1024**3))
+    total = _total_memory_bytes()
+    if not total or total <= 0:
+        return None
+    ten_percent = int(total * 0.10)
+    floor_bytes = int(2 * (1024**3))
+    cap_bytes = int(8 * (1024**3))
+    return max(floor_bytes, min(ten_percent, cap_bytes))
+
+
+def _available_vram_bytes(device: torch.device) -> tuple[int | None, int | None]:
+    if device.type != "cuda":
+        return None, None
+    try:
+        free, total = torch.cuda.mem_get_info()
+        return int(free), int(total)
+    except Exception:
+        return None, None
+
+
+def _low_vram_threshold_bytes(total_bytes: int | None) -> int | None:
+    try:
+        override_mb = int(os.environ.get("SBS_MIN_FREE_VRAM_MB", "0"))
+    except ValueError:
+        override_mb = 0
+    if override_mb > 0:
+        return override_mb * 1024 * 1024
+    if not total_bytes or total_bytes <= 0:
+        return None
+    ten_percent = int(total_bytes * 0.10)
+    floor_bytes = int(512 * 1024 * 1024)
+    cap_bytes = int(4 * 1024 * 1024 * 1024)
+    return max(floor_bytes, min(ten_percent, cap_bytes))
+
+
+def _depth_sample_max() -> int:
+    try:
+        value = int(os.environ.get("SBS_DEPTH_SAMPLE_MAX", "1000000"))
+    except ValueError:
+        value = 1_000_000
+    return max(100_000, value)
+
+
+def _depth_sample_chunk() -> int:
+    try:
+        value = int(os.environ.get("SBS_DEPTH_SAMPLE_CHUNK", "200000"))
+    except ValueError:
+        value = 200_000
+    return max(1_000, value)
+
+
+def _sample_max_for_memory(sample_max: int, avail_bytes: int | None) -> int:
+    if not avail_bytes or avail_bytes <= 0:
+        return sample_max
+    budget = max(int(avail_bytes * 0.01), 4 * 10_000)
+    max_vals = budget // 4
+    return max(10_000, min(sample_max, max_vals))
+
+
+def _sample_valid_values(values: np.ndarray, sample_max: int, chunk_size: int) -> np.ndarray:
+    flat = values.ravel()
+    if flat.size == 0 or sample_max <= 0:
+        return np.empty((0,), dtype=np.float32)
+    out = np.empty(sample_max, dtype=np.float32)
+    count = 0
+    for start in range(0, flat.size, chunk_size):
+        chunk = flat[start : start + chunk_size]
+        valid = np.isfinite(chunk) & (chunk > 0)
+        if not np.any(valid):
+            continue
+        vals = chunk[valid].astype(np.float32, copy=False)
+        take = min(sample_max - count, vals.size)
+        if take > 0:
+            out[count : count + take] = vals[:take]
+            count += take
+        if count >= sample_max:
+            break
+    return out[:count]
+
+
+def _safe_sample(values: np.ndarray, sample_max: int) -> np.ndarray:
+    chunk_size = _depth_sample_chunk()
+    current_max = max(10_000, sample_max)
+    chunk_size = min(chunk_size, current_max)
+    while current_max >= 10_000:
+        try:
+            return _sample_valid_values(values, current_max, chunk_size)
+        except MemoryError:
+            current_max = max(10_000, current_max // 2)
+            chunk_size = max(1_000, min(chunk_size // 2, current_max))
+            logging.warning(
+                "Depth sampling MemoryError; reducing sample_max=%d chunk=%d",
+                current_max,
+                chunk_size,
+            )
+    return np.empty((0,), dtype=np.float32)
+
+
 def _color_to_uint8(
     color: np.ndarray,
     scratch: np.ndarray | None = None,
@@ -520,13 +654,17 @@ class FFmpegReader:
         output_rgb: bool = False,
         codec_name: str | None = None,
         reuse_buffer: bool = False,
+        extra_hw_frames: int | None = None,
     ) -> None:
 
         cmd = ["ffmpeg", "-v", "error"]
         filters = []
         pix_fmt = "rgb24" if output_rgb else "bgr24"
         if use_hwaccel:
-            cmd += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-extra_hw_frames", "8"]
+            hw_frames = 8 if extra_hw_frames is None else max(0, int(extra_hw_frames))
+            cmd += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+            if hw_frames > 0:
+                cmd += ["-extra_hw_frames", str(hw_frames)]
             decoder = _pick_cuvid_decoder(codec_name)
             if decoder:
                 cmd += ["-c:v", decoder]
@@ -687,6 +825,7 @@ class SegmentWriter:
         audio_codec: str,
         segment_frames: int,
         keep_segments: bool,
+        nvenc_lowmem: bool = False,
     ) -> None:
         self.output_path = output_path
         self.width = width
@@ -700,6 +839,11 @@ class SegmentWriter:
         self.segment_frames = max(0, int(segment_frames))
         self.keep_segments = bool(keep_segments)
         self.writer: FFmpegWriter | None = None
+        self.nvenc_fallback_used = False
+        self.nvenc_lowmem = bool(nvenc_lowmem)
+        self.nvenc_lowmem_used = False
+        self.x264_lowmem = False
+        self.x264_lowmem_used = False
         self.segment_paths: list[Path] = []
         self.segment_dir: Path | None = None
         self.segment_index = 0
@@ -722,6 +866,8 @@ class SegmentWriter:
                 encoder=self.encoder,
                 audio_path=None,
                 audio_codec=self.audio_codec,
+                x264_lowmem=self.x264_lowmem,
+                nvenc_lowmem=self.nvenc_lowmem,
             )
             self.segment_paths.append(segment_path)
         else:
@@ -735,6 +881,8 @@ class SegmentWriter:
                 encoder=self.encoder,
                 audio_path=self.audio_path,
                 audio_codec=self.audio_codec,
+                x264_lowmem=self.x264_lowmem,
+                nvenc_lowmem=self.nvenc_lowmem,
             )
 
     def write(self, frame_rgb: bytes) -> None:
@@ -746,8 +894,76 @@ class SegmentWriter:
             self.frames_in_segment = 0
             self._open_segment()
         assert self.writer is not None
-        self.writer.write(frame_rgb)
-        self.frames_in_segment += 1
+        try:
+            self.writer.write(frame_rgb)
+            ret = self.writer.proc.poll()
+            if ret is not None and ret != 0:
+                raise RuntimeError(f"FFmpeg exited with code {ret}")
+            self.frames_in_segment += 1
+            return
+        except Exception as exc:
+            if self._handle_write_failure(exc, frame_rgb):
+                return
+            raise
+
+    def _handle_write_failure(self, exc: Exception, frame_rgb: bytes) -> bool:
+        if self.frames_in_segment > 0:
+            return False
+        if self.use_segments and self.segment_index > 0:
+            return False
+        if self.encoder in ("nvenc", "hevc_nvenc") and not self.nvenc_lowmem_used:
+            self.nvenc_lowmem_used = True
+            self.nvenc_lowmem = True
+            logging.warning(
+                "NVENC failed (%s). Retrying with low-memory settings for %s.",
+                exc,
+                self.output_path,
+            )
+            return self._retry_write(frame_rgb)
+        if self.encoder in ("nvenc", "hevc_nvenc") and not self.nvenc_fallback_used:
+            self.nvenc_fallback_used = True
+            self.encoder = "x264"
+            self.x264_lowmem = False
+            logging.warning(
+                "NVENC failed (%s). Falling back to x264 for %s.",
+                exc,
+                self.output_path,
+            )
+            return self._retry_write(frame_rgb)
+        if self.encoder == "x264" and not self.x264_lowmem_used:
+            self.x264_lowmem_used = True
+            self.x264_lowmem = True
+            logging.warning(
+                "x264 failed (%s). Retrying with low-memory settings for %s.",
+                exc,
+                self.output_path,
+            )
+            return self._retry_write(frame_rgb)
+        return False
+
+    def _retry_write(self, frame_rgb: bytes) -> bool:
+        if self.writer is not None:
+            try:
+                self.writer.close()
+            except Exception:
+                pass
+            self.writer = None
+        if self.use_segments:
+            if self.segment_paths:
+                path = self.segment_paths.pop()
+                path.unlink(missing_ok=True)
+        else:
+            self.output_path.unlink(missing_ok=True)
+        self._open_segment()
+        try:
+            self.writer.write(frame_rgb)
+            ret = self.writer.proc.poll()
+            if ret is not None and ret != 0:
+                return False
+            self.frames_in_segment += 1
+            return True
+        except Exception:
+            return False
 
     def _close_segment(self) -> None:
         if self.writer is None:
@@ -873,11 +1089,43 @@ def build_3d_points(
     return pts_2d.astype(np.float32), pts_3d
 
 
-def compute_depth_range(depth_map: np.ndarray, q_low: float, q_high: float) -> tuple[float, float, float]:
-    valid = np.isfinite(depth_map) & (depth_map > 0)
-    if not np.any(valid):
-        return 0.0, 0.0, 0.0
-    depth_vals = depth_map[valid].astype(np.float32, copy=False)
+def compute_depth_range(
+    depth_map: np.ndarray,
+    q_low: float,
+    q_high: float,
+    min_free_ram_gb: float | None = None,
+) -> tuple[float, float, float]:
+    def _select_values(values: np.ndarray) -> np.ndarray:
+        valid = np.isfinite(values) & (values > 0)
+        if not np.any(valid):
+            return np.empty((0,), dtype=np.float32)
+        return values[valid].astype(np.float32, copy=False)
+
+    avail = _available_memory_bytes()
+    threshold = _low_mem_threshold_bytes(min_free_ram_gb)
+    low_mem = avail is not None and threshold is not None and avail < threshold
+    if low_mem:
+        sample_max = _depth_sample_max()
+        sample_max = _sample_max_for_memory(sample_max, avail)
+        depth_vals = _safe_sample(depth_map, sample_max)
+        if avail is not None:
+            logging.warning(
+                "Low free RAM %.2f GB; sampling depth (max=%d).",
+                avail / (1024**3),
+                sample_max,
+            )
+    else:
+        try:
+            depth_vals = _select_values(depth_map)
+        except MemoryError:
+            sample_max = min(_depth_sample_max(), 200_000)
+            sample_max = _sample_max_for_memory(sample_max, avail)
+            depth_vals = _safe_sample(depth_map, sample_max)
+            logging.warning(
+                "Depth quantile fallback due to MemoryError; sampling (max=%d).",
+                sample_max,
+            )
+
     count = depth_vals.size
     if count == 0:
         return 0.0, 0.0, 0.0
@@ -911,6 +1159,16 @@ def compute_depth_range(depth_map: np.ndarray, q_low: float, q_high: float) -> t
     high = _interp(*positions[1])
     median = _interp(*positions[2])
     return low, high, median
+
+
+
+def _cleanup_cpu_memory(context: str = "") -> None:
+    try:
+        gc.collect()
+        if context:
+            logging.info("CPU memory cleanup: %s", context)
+    except Exception as exc:
+        logging.warning("CPU memory cleanup failed: %s", exc)
 
 
 def _cleanup_cache_dir(cache_dir: Path) -> None:
@@ -998,7 +1256,7 @@ def build_keyframe_state(
             need_alpha=False,
         )
 
-    low, high, median = compute_depth_range(depth, args.depth_q_low, args.depth_q_high)
+    low, high, median = compute_depth_range(depth, args.depth_q_low, args.depth_q_high, args.min_free_ram_gb)
     depth_min = max(low, args.depth_min) if low > 0 else args.depth_min
     depth_max = min(high, args.depth_max) if args.depth_max > 0 and high > 0 else (high if high > 0 else args.depth_max)
 
@@ -1155,15 +1413,25 @@ def submit_sbs_frame(
 ) -> bool:
     if writer_worker is None:
         return write_sbs_frame(writer, sbs)
-    return writer_worker.submit(sbs.copy())
+    return writer_worker.submit(sbs)
 
 
 def should_async_write(width: int, height: int, args: argparse.Namespace) -> bool:
     if not args.async_write:
         return False
+    if int(args.write_queue) <= 1:
+        return False
     frame_bytes = width * height * 2 * 3
     threshold_mb = int(os.environ.get("SBS_ASYNC_MAX_MB", "32"))
-    return frame_bytes <= threshold_mb * 1024 * 1024
+    if frame_bytes > threshold_mb * 1024 * 1024:
+        return False
+    avail = _available_memory_bytes()
+    if avail is not None:
+        min_free_mb = int(os.environ.get("SBS_ASYNC_MIN_FREE_MB", "512"))
+        reserve = frame_bytes * (int(args.write_queue) + 1)
+        if avail < max(min_free_mb * 1024 * 1024, reserve):
+            return False
+    return True
 
 def build_sbs(left_img: np.ndarray, right_img: np.ndarray, out: np.ndarray | None = None) -> np.ndarray:
     height, width, channels = left_img.shape
@@ -1491,9 +1759,33 @@ def _resolve_output_path(
 
 def _load_image_bgr(path: Path) -> np.ndarray | None:
     image = cv2.imread(str(path), cv2.IMREAD_COLOR)
-    if image is None:
+    if image is not None:
+        return image
+    try:
+        data = np.fromfile(str(path), dtype=np.uint8)
+        if data.size == 0:
+            return None
+        return cv2.imdecode(data, cv2.IMREAD_COLOR)
+    except Exception:
         return None
-    return image
+
+
+def _write_image_bgr(path: Path, image_bgr: np.ndarray) -> bool:
+    try:
+        if cv2.imwrite(str(path), image_bgr):
+            return True
+    except Exception:
+        pass
+    try:
+        ext = path.suffix.lower() or ".png"
+        ok, buf = cv2.imencode(ext, image_bgr)
+        if not ok:
+            return False
+        ensure_dir(path.parent)
+        path.write_bytes(buf.tobytes())
+        return True
+    except Exception:
+        return False
 
 
 def process_image(
@@ -1568,7 +1860,8 @@ def process_image(
 
     sbs = build_sbs(left_img, right_img, None)
     ensure_dir(out_path.parent)
-    if not cv2.imwrite(str(out_path), cv2.cvtColor(sbs, cv2.COLOR_RGB2BGR)):
+    bgr = cv2.cvtColor(sbs, cv2.COLOR_RGB2BGR)
+    if not _write_image_bgr(out_path, bgr):
         logging.error("Failed to write image: %s", out_path)
         return 2
     logging.info("Image processed: %s -> %s", image_path, out_path)
@@ -1728,6 +2021,7 @@ def run_two_pass_streaming(
     perf = PerfStats(args.perf_interval) if args.perf_interval and args.perf_interval > 0 else None
 
     results: dict[int, RenderResult] = {}
+    max_pending = max(4, buffer_frames * 2, int(args.write_queue) * 2)
     result_cond = threading.Condition()
     active_workers = 0
 
@@ -1874,6 +2168,13 @@ def run_two_pass_streaming(
                 break
 
             with result_cond:
+                while (
+                    len(results) >= max_pending
+                    and item.frame_idx > next_write_idx
+                    and render_error is None
+                    and producer_error is None
+                ):
+                    result_cond.wait(0.05)
                 results[item.frame_idx] = result
                 result_cond.notify_all()
 
@@ -1894,12 +2195,12 @@ def run_two_pass_streaming(
         worker.start()
         return worker
 
+    next_write_idx = 0
     workers: list[threading.Thread] = []
     workers.append(_start_worker("cpu", args_pass2_cpu, device_cpu, "cpu"))
     gpu_worker_started = False
 
     return_code = 0
-    next_write_idx = 0
     try:
         while True:
             if gpu_assist and not gpu_worker_started and producer_done.is_set():
@@ -1925,6 +2226,7 @@ def run_two_pass_streaming(
                         break
                     continue
                 result = results.pop(next_write_idx)
+                result_cond.notify_all()
 
             if writer is None:
                 writer = SegmentWriter(
@@ -1939,6 +2241,7 @@ def run_two_pass_streaming(
                     args.audio_codec,
                     segment_frames,
                     args.keep_segments,
+                    nvenc_lowmem=low_vram_active,
                 )
                 if should_async_write(result.width, result.height, args):
                     writer_worker = AsyncSBSWriter(writer, args.write_queue)
@@ -2008,6 +2311,8 @@ def run_video(
     predictor: SharpPredictor,
 ) -> int:
     low_ram_active = False
+    low_vram_active = False
+    hw_frames_override: int | None = None
 
     def _apply_low_ram_fallback() -> None:
         nonlocal low_ram_active
@@ -2015,19 +2320,50 @@ def run_video(
             return
         low_ram_active = True
         logging.warning(
-            "Low free RAM. Forcing per_frame_batch=1, per_frame_pipeline=1, cache_per_frame=false.",
+            "Low free RAM. Forcing per_frame_batch=1, per_frame_pipeline=1, cache_per_frame=false, async_write=false.",
         )
         args.per_frame_batch = 1
         args.per_frame_pipeline = 1
         args.cache_per_frame = False
+        args.async_write = False
+        args.write_queue = min(int(args.write_queue), 1)
         os.environ["SHARP_EIG_CHUNK_SIZE"] = str(
             min(int(os.environ.get("SHARP_EIG_CHUNK_SIZE", "262144")), 65536)
         )
 
-    if args.min_free_ram_gb and args.min_free_ram_gb > 0:
+    def _apply_low_vram_fallback(free_bytes: int | None = None, reason: str | None = None) -> None:
+        nonlocal low_vram_active, hw_frames_override
+        if low_vram_active:
+            return
+        low_vram_active = True
+        hw_frames_override = 2
+        reason_text = f" ({reason})" if reason else ""
+        if free_bytes is not None:
+            logging.warning(
+                "Low GPU VRAM%s (free %.2f GB). Forcing per_frame_batch=1, per_frame_pipeline=1, async_write=false.",
+                reason_text,
+                free_bytes / (1024**3),
+            )
+        else:
+            logging.warning(
+                "Low GPU VRAM%s. Forcing per_frame_batch=1, per_frame_pipeline=1, async_write=false.",
+                reason_text,
+            )
+        args.per_frame_batch = min(args.per_frame_batch, 1)
+        args.per_frame_pipeline = min(args.per_frame_pipeline, 1)
+        args.buffer_frames = min(args.buffer_frames, 2)
+        args.write_queue = min(int(args.write_queue), 1)
+        args.async_write = False
+
+    low_ram_threshold = _low_mem_threshold_bytes(args.min_free_ram_gb)
+    if low_ram_threshold is not None:
         avail = _available_memory_bytes()
-        if avail is not None and avail < args.min_free_ram_gb * (1024**3):
+        if avail is not None and avail < low_ram_threshold:
             _apply_low_ram_fallback()
+    vram_free, vram_total = _available_vram_bytes(device)
+    low_vram_threshold = _low_vram_threshold_bytes(vram_total)
+    if low_vram_threshold is not None and vram_free is not None and vram_free < low_vram_threshold:
+        _apply_low_vram_fallback(vram_free, reason="free below threshold")
 
     if not video_path.exists():
         logging.error("Input video not found: %s", video_path)
@@ -2035,6 +2371,7 @@ def run_video(
 
     cap = None
     reader = None
+    first_frame: np.ndarray | None = None
     total_frames = 0
     codec_name = None
 
@@ -2065,6 +2402,9 @@ def run_video(
     width_even = width + (width % 2)
     height_even = height + (height % 2)
     large_frame_area = int(os.environ.get("SBS_LARGE_FRAME_AREA", "8000000"))
+    gpu_pressure_area = int(os.environ.get("SBS_GPU_FRAME_AREA", "2000000"))
+    if width_even * height_even >= gpu_pressure_area:
+        _apply_low_vram_fallback(reason="large frame")
     if width_even * height_even >= large_frame_area and not low_ram_active:
         low_ram_active = True
         logging.warning(
@@ -2077,6 +2417,8 @@ def run_video(
         args.write_queue = min(args.write_queue, 1)
         args.buffer_frames = min(args.buffer_frames, 2)
         args.cache_per_frame = False
+    if width_even * height_even >= large_frame_area:
+        hw_frames_override = 2 if hw_frames_override is None else min(hw_frames_override, 2)
     logging.info(
         "Video opened: path=%s fps=%.2f size=%dx%d io=%s decode=%s frames=%s",
         video_path,
@@ -2132,22 +2474,50 @@ def run_video(
     logging.info("Using SHARP predictor.")
     if args.io_backend == "ffmpeg":
         try:
+            hw_frames = int(os.environ.get("SBS_HW_FRAMES", "8"))
+            large_hw_area = int(os.environ.get("SBS_HW_FRAMES_AREA", "4000000"))
+            if width * height >= large_hw_area:
+                hw_frames = min(hw_frames, 2)
+            if hw_frames_override is not None:
+                hw_frames = min(hw_frames, hw_frames_override)
+            if low_vram_active:
+                hw_frames = min(hw_frames, 2)
             reuse_reader_buffer = (not args.two_pass) and (
                 args.keyframe_mode != "per_frame"
                 or (args.per_frame_pipeline <= 1 and args.per_frame_batch <= 1)
             )
-            reader = FFmpegReader(
-                video_path,
-                width,
-                height,
-                use_hwaccel=args.decode == "nvdec",
-                target_fps=float(args.target_fps or 0),
-                output_rgb=args.keyframe_mode == "per_frame",
-                codec_name=codec_name,
-                reuse_buffer=reuse_reader_buffer,
-            )
+            if low_vram_active:
+                reuse_reader_buffer = True
+            def _build_reader(use_hwaccel: bool, extra_hw: int | None) -> FFmpegReader:
+                return FFmpegReader(
+                    video_path,
+                    width,
+                    height,
+                    use_hwaccel=use_hwaccel,
+                    target_fps=float(args.target_fps or 0),
+                    output_rgb=args.keyframe_mode == "per_frame",
+                    codec_name=codec_name,
+                    reuse_buffer=reuse_reader_buffer,
+                    extra_hw_frames=extra_hw,
+                )
+
+            reader = _build_reader(args.decode == "nvdec", hw_frames)
             if reuse_reader_buffer:
                 logging.info("FFmpeg reader: reuse buffer enabled")
+            if args.decode == "nvdec" and hw_frames != 8:
+                logging.info("FFmpeg reader: extra_hw_frames=%d", hw_frames)
+            first_frame = reader.read()
+            if first_frame is None and args.decode == "nvdec":
+                logging.warning("NVDEC returned no frames; retrying with extra_hw_frames=0.")
+                reader.close()
+                reader = _build_reader(True, 0)
+                first_frame = reader.read()
+            if first_frame is None and args.decode == "nvdec":
+                if os.environ.get("SBS_NVDEC_CPU_FALLBACK", "0") == "1":
+                    logging.warning("NVDEC failed; retrying with CPU decode.")
+                    reader.close()
+                    reader = _build_reader(False, None)
+                    first_frame = reader.read()
         except Exception as exc:
             logging.error("FFmpeg reader init failed: %s", exc)
             return 2
@@ -2193,8 +2563,7 @@ def run_video(
                 args.keyframe_refresh_s,
                 refresh_frames,
             )
-    first_frame = None
-    if reader is not None:
+    if reader is not None and first_frame is None:
         first_frame = reader.read()
         if first_frame is None:
             logging.error("FFmpeg reader returned no frames for %s", video_path)
@@ -2316,21 +2685,33 @@ def run_video(
             frame_is_rgb = bool(reader is not None and getattr(reader, "output_rgb", False))
             low_ram_check_interval = 30
             last_low_ram_frame = -1
+            low_vram_check_interval = 30
+            last_low_vram_frame = -1
             write_failed = False
             while True:
                 if (
-                    args.min_free_ram_gb
+                    low_ram_threshold
                     and frame_idx % low_ram_check_interval == 0
                     and frame_idx != last_low_ram_frame
                 ):
                     avail = _available_memory_bytes()
                     last_low_ram_frame = frame_idx
-                    if avail is not None and avail < args.min_free_ram_gb * (1024**3):
+                    if avail is not None and avail < low_ram_threshold:
                         _apply_low_ram_fallback()
                         _disable_pipeline()
-                if low_ram_active and use_pipeline:
+                if (
+                    low_vram_threshold
+                    and frame_idx % low_vram_check_interval == 0
+                    and frame_idx != last_low_vram_frame
+                ):
+                    vram_free, _ = _available_vram_bytes(device)
+                    last_low_vram_frame = frame_idx
+                    if vram_free is not None and vram_free < low_vram_threshold:
+                        _apply_low_vram_fallback(vram_free, reason="runtime check")
+                        _disable_pipeline()
+                if (low_ram_active or low_vram_active) and use_pipeline:
                     _disable_pipeline()
-                if low_ram_active:
+                if low_ram_active or low_vram_active:
                     batch_size = 1
                 fetch_timer = Timer()
                 batch_frames = []
@@ -2365,6 +2746,7 @@ def run_video(
                         args.audio_codec,
                         segment_frames,
                         args.keep_segments,
+                        nvenc_lowmem=low_vram_active,
                     )
 
                     if should_async_write(width_even, height_even, args):
@@ -2427,15 +2809,25 @@ def run_video(
 
                 for gaussians, frame in zip(gaussians_list, padded_frames):
                     if (
-                        args.min_free_ram_gb
+                        low_ram_threshold
                         and frame_idx % low_ram_check_interval == 0
                         and frame_idx != last_low_ram_frame
                     ):
                         avail = _available_memory_bytes()
                         last_low_ram_frame = frame_idx
-                        if avail is not None and avail < args.min_free_ram_gb * (1024**3):
+                        if avail is not None and avail < low_ram_threshold:
                             _apply_low_ram_fallback()
                             _disable_pipeline()
+                    if (
+                        low_vram_threshold
+                        and frame_idx % low_vram_check_interval == 0
+                        and frame_idx != last_low_vram_frame
+                    ):
+                        vram_free, _ = _available_vram_bytes(device)
+                        last_low_vram_frame = frame_idx
+                    if vram_free is not None and vram_free < low_vram_threshold:
+                        _apply_low_vram_fallback(vram_free, reason="runtime check")
+                        _disable_pipeline()
                     if args.cache_per_frame:
                         ply_path = cache_root / f"seg000_f{frame_idx:06d}.ply"
                         if not ply_path.exists():
@@ -2526,8 +2918,11 @@ def run_video(
                         left_img = inpaint_holes(left_img, alphas[0], args.inpaint_radius)
                         right_img = inpaint_holes(right_img, alphas[1], args.inpaint_radius)
 
-                    sbs_buf = build_sbs(left_img, right_img, sbs_buf)
-                    sbs = sbs_buf
+                    if writer_worker is None:
+                        sbs_buf = build_sbs(left_img, right_img, sbs_buf)
+                        sbs = sbs_buf
+                    else:
+                        sbs = build_sbs(left_img, right_img, None)
                     write_timer = Timer()
                     ok = submit_sbs_frame(writer, writer_worker, sbs)
                     write_ms = write_timer.elapsed_ms()
@@ -2601,6 +2996,8 @@ def run_video(
             sbs_buf = None
             low_ram_check_interval = 30
             last_low_ram_frame = -1
+            low_vram_check_interval = 30
+            last_low_vram_frame = -1
             write_failed = False
             pending_frame = first_frame
             first_frame = None
@@ -2619,14 +3016,23 @@ def run_video(
 
                 frame, (width_even, height_even) = pad_even(frame)
                 if (
-                    args.min_free_ram_gb
+                    low_ram_threshold
                     and frame_idx % low_ram_check_interval == 0
                     and frame_idx != last_low_ram_frame
                 ):
                     avail = _available_memory_bytes()
                     last_low_ram_frame = frame_idx
-                    if avail is not None and avail < args.min_free_ram_gb * (1024**3):
+                    if avail is not None and avail < low_ram_threshold:
                         _apply_low_ram_fallback()
+                if (
+                    low_vram_threshold
+                    and frame_idx % low_vram_check_interval == 0
+                    and frame_idx != last_low_vram_frame
+                ):
+                    vram_free, _ = _available_vram_bytes(device)
+                    last_low_vram_frame = frame_idx
+                    if vram_free is not None and vram_free < low_vram_threshold:
+                        _apply_low_vram_fallback(vram_free, reason="runtime check")
                 if writer is None:
                     writer = SegmentWriter(
                         out_path,
@@ -2640,6 +3046,7 @@ def run_video(
                         args.audio_codec,
                         segment_frames,
                         args.keep_segments,
+                        nvenc_lowmem=low_vram_active,
                     )
 
                     if should_async_write(width_even, height_even, args):
@@ -2709,8 +3116,11 @@ def run_video(
 
                 if keyframe is None:
                     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    sbs_buf = build_sbs(frame_rgb, frame_rgb, sbs_buf)
-                    sbs = sbs_buf
+                    if writer_worker is None:
+                        sbs_buf = build_sbs(frame_rgb, frame_rgb, sbs_buf)
+                        sbs = sbs_buf
+                    else:
+                        sbs = build_sbs(frame_rgb, frame_rgb, None)
                     write_timer = Timer()
                     ok = submit_sbs_frame(writer, writer_worker, sbs)
                     write_ms = write_timer.elapsed_ms()
@@ -2800,8 +3210,11 @@ def run_video(
                             if keyframe is None:
                                 shot_detector.reset()
                                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                                sbs_buf = build_sbs(frame_rgb, frame_rgb, sbs_buf)
-                                sbs = sbs_buf
+                                if writer_worker is None:
+                                    sbs_buf = build_sbs(frame_rgb, frame_rgb, sbs_buf)
+                                    sbs = sbs_buf
+                                else:
+                                    sbs = build_sbs(frame_rgb, frame_rgb, None)
                                 write_timer = Timer()
                                 ok = submit_sbs_frame(writer, writer_worker, sbs)
                                 write_ms = write_timer.elapsed_ms()
@@ -2887,8 +3300,11 @@ def run_video(
                     left_img = inpaint_holes(left_img, alphas[0], args.inpaint_radius)
                     right_img = inpaint_holes(right_img, alphas[1], args.inpaint_radius)
 
-                sbs_buf = build_sbs(left_img, right_img, sbs_buf)
-                sbs = sbs_buf
+                if writer_worker is None:
+                    sbs_buf = build_sbs(left_img, right_img, sbs_buf)
+                    sbs = sbs_buf
+                else:
+                    sbs = build_sbs(left_img, right_img, None)
                 write_timer = Timer()
                 ok = submit_sbs_frame(writer, writer_worker, sbs)
                 write_ms = write_timer.elapsed_ms()
@@ -3043,6 +3459,8 @@ def main() -> int:
     failures = 0
     for idx, path in enumerate(inputs, start=1):
         out_path = _resolve_output_path(path, out_arg, args.mode, is_batch, batch_out_dir)
+        if is_batch:
+            logging.info("BATCH_ITEM %d/%d %s", idx, len(inputs), path.name)
         logging.info("[%d/%d] %s -> %s", idx, len(inputs), path, out_path)
         if args.mode == "image":
             ret = process_image(args, path, out_path, device, predictor)
@@ -3051,6 +3469,8 @@ def main() -> int:
         if ret != 0:
             failures += 1
             logging.error("Failed: %s (code=%d)", path, ret)
+        if is_batch:
+            _cleanup_cpu_memory(f"batch item {idx}/{len(inputs)}")
 
     if failures:
         logging.error("Completed with %d failure(s).", failures)
