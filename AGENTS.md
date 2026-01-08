@@ -32,8 +32,8 @@
 - Goal (incl. success criteria):
   - 提交并推送 cl.exe 自动定位修复与 README 常见报错补充。
   - Success criteria:
-    - [ ] 相关改动已提交。
-    - [ ] 相关改动已推送到 origin/main。
+    - [x] 相关改动已提交。
+    - [x] 相关改动已推送到 origin/main。
 
 - Constraints/Assumptions:
   - 不提交未跟踪文件（用户要求）。
@@ -46,14 +46,14 @@
   - Done:
     - 已实现 cl.exe 自动定位（tools/web_server.py, tools/video_to_sbs.py, tools/precompile.py）。
     - 已更新 README.md 与 README.zh-CN.md（opencv.cuda 说明）。
+    - 已提交并推送修复（commit fdf5d79）。
   - Now:
-    - 准备提交并推送改动。
+    - 等待用户验证。
   - Next:
-    - 提交改动。
-    - 推送到 origin/main。
+    - 如有反馈，继续调整。
 
 - Open questions (UNCONFIRMED if needed):
-  - [UNCONFIRMED] 提交信息是否有偏好？
+  - [UNCONFIRMED] 用户更新后 `where cl` 是否仍失败？
 
 - Working set (files/ids/commands):
   - Files:
@@ -63,12 +63,10 @@
     - README.md
     - README.zh-CN.md
   - Commands:
-    - git status -sb
-    - git add -u
-    - git commit -m "fix: auto-detect cl.exe with vswhere"
     - git push origin main
   - Artifacts/Refs:
     - origin: https://github.com/z4djjskk/quest-sbs-3d
+    - commit: fdf5d79
     - PR: https://github.com/apple/ml-sharp/pull/64
 ## EXECUTION PLAN (PLANS) 〞 multi-hour execution scaffold (edit this section)
 
@@ -76,26 +74,26 @@
 - 提交并推送 cl.exe 自动定位修复与 README 常见报错补充。
 
 ### Acceptance Criteria
-- [ ] 改动已提交。
-- [ ] 改动已推送到 origin/main。
+- [x] 改动已提交。
+- [x] 改动已推送到 origin/main。
 
 ### Plan (3-7 steps max)
-- [ ] Stage 相关文件。 — pending
-- [ ] 提交改动。 — pending
-- [ ] 推送到 origin/main。 — pending
+- [x] Stage 相关文件。 — completed
+- [x] 提交改动。 — completed
+- [x] 推送到 origin/main。 — completed
 
 ### Verification commands (copy-paste)
     git status -sb
 
 ### Progress
 - Pending:
-  - Stage 相关文件。
-  - 提交改动。
-  - 推送到 origin/main。
+  - <none>
 - In Progress:
   - <none>
 - Completed:
-  - <none>
+  - Stage 相关文件。
+  - 提交改动。
+  - 推送到 origin/main。
 
 ### Risks / Tradeoffs
 - Risk: 工作区有未跟踪文件。  Mitigation: 使用 `git add -u` 仅提交已跟踪文件。
