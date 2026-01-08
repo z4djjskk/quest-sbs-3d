@@ -39,23 +39,25 @@
 - Constraints/Assumptions:
   - 具备对两个仓库的 Git 推送权限与认证。
   - 不使用破坏性命令（如 reset/checkout --）。
-  - 默认将当前工作区改动全部纳入提交（除非用户指定排除文件）。
+  - 不提交未跟踪文件（用户要求）。
 
 - Key decisions:
   - 先检查现有分支与 remotes，再决定推送策略（直接推送或新建分支）。 — rationale: 避免覆盖错误分支。
+  - 使用 merge 同步远端更新后再推送。 — rationale: 用户未指定，采用不改写历史的方式。
 
 - State:
   - Done:
     - 已检查 git 状态/分支/远程（main 跟踪 origin/main）。
+    - 已提交本地改动（commit 1ce66ad）。
+    - 推送到 origin/main 被拒绝：远端有新提交需先同步。
   - Now:
-    - 确认提交范围（是否包含未跟踪文件）与 ml-sharp 目标分支。
+    - 执行 git pull (merge) 同步远端并重新 push。
   - Next:
-    - 整理提交并推送到 quest-sbs-3d。
     - 配置 ml-sharp 远程并推送到指定分支或创建 PR。
 
 - Open questions (UNCONFIRMED if needed):
   - [UNCONFIRMED] ml-sharp 需要同步到哪个分支？是否需要 PR 方式？
-  - [UNCONFIRMED] 未跟踪文件（AGENT_COORDINATION.md、codex_last_message.txt、push_payload.json）是否需要提交？
+  - [UNCONFIRMED] 需要使用 fork 向 ml-sharp 提交，还是你有直接推送权限？
 
 - Working set (files/ids/commands):
   - Files:
@@ -81,8 +83,8 @@
 - [ ] 用户确认分支与推送结果。
 
 ### Plan (3-7 steps max)
-- [ ] 核对 git 状态/分支/远程配置。 — pending
-- [ ] 整理提交并推送到 quest-sbs-3d。 — pending
+- [x] 核对 git 状态/分支/远程配置。 — completed
+- [ ] 同步远端并推送到 quest-sbs-3d。 — in_progress
 - [ ] 同步到 ml-sharp 目标分支或创建 PR。 — pending
 
 ### Verification commands (copy-paste)
@@ -90,13 +92,11 @@
 
 ### Progress
 - Pending:
-  - 核对 git 状态/分支/远程配置。
-  - 整理提交并推送到 quest-sbs-3d。
   - 同步到 ml-sharp 目标分支或创建 PR。
 - In Progress:
-  - <none>
+  - 同步远端并推送到 quest-sbs-3d。
 - Completed:
-  - <none>
+  - 核对 git 状态/分支/远程配置。
 
 ### Risks / Tradeoffs
 - Risk: 审查范围大且近期改动多。  Mitigation: 先覆盖核心路径与异常分支。
